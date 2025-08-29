@@ -45,9 +45,16 @@ llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
 
 # ---------- DB CONNECTION ----------
 # keep your RDS string or use your env var
+db_host = st.secrets["DB_HOST"]
+db_port = st.secrets["DB_PORT"]
+db_name = st.secrets["DB_NAME"]
+db_user = st.secrets["DB_USER"]
+db_password = st.secrets["DB_PASSWORD"]
+
 engine = create_engine(
-    "postgresql+psycopg2://gbl_master:S1L1lO6I3O65Ta@gbl-crawler-production-1.cjsbw32v9qjg.ap-south-1.rds.amazonaws.com:5432/gbl_data_lake"
+    f"postgresql+psycopg2://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
 )
+
 db = SQLDatabase(
     engine,
     include_tables=["voylla_design_ai"],
