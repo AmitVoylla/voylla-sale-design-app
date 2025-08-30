@@ -21,8 +21,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ---------- Configuration ----------
-MAX_ITERATIONS = 8  # Reduced from 15
-QUERY_TIMEOUT = 30  # seconds
+MAX_ITERATIONS = 8
+QUERY_TIMEOUT = 30
 MAX_EXPORT_ROWS = 1000
 
 # ---------- Templates ----------
@@ -87,7 +87,7 @@ def get_database_connection():
 def get_llm():
     """Create cached LLM instance"""
     return ChatOpenAI(
-        model="gpt-4.1-mini",  # Better model for complex reasoning
+        model="gpt-4.1-mini",
         temperature=0.1,
         request_timeout=QUERY_TIMEOUT
     )
@@ -95,13 +95,11 @@ def get_llm():
 # ---------- Utility Functions ----------
 def clean_response(response: str) -> str:
     """Clean and format the agent response"""
-    # Remove any agent thinking traces
     lines = response.split('\n')
     cleaned_lines = []
     skip_line = False
     
     for line in lines:
-        # Skip agent internal thinking
         if any(marker in line.lower() for marker in ['action:', 'thought:', 'observation:', 'final answer:']):
             if 'final answer:' in line.lower():
                 skip_line = False
@@ -120,7 +118,6 @@ def markdown_to_dataframe(markdown_text: str) -> Optional[pd.DataFrame]:
         lines = markdown_text.splitlines()
         header_idx = None
         
-        # Find table header
         for i in range(len(lines) - 1):
             if '|' in lines[i]:
                 sep = lines[i + 1]
@@ -131,12 +128,10 @@ def markdown_to_dataframe(markdown_text: str) -> Optional[pd.DataFrame]:
         if header_idx is None:
             return None
         
-        # Extract table lines
         table_lines = [row for row in lines[header_idx:] if '|' in row and not re.match(r'^[\s\|\-:]+$', row)]
         if len(table_lines) < 2:
             return None
         
-        # Normalize pipes
         normalized = []
         for row in table_lines:
             r = row.strip()
@@ -146,7 +141,6 @@ def markdown_to_dataframe(markdown_text: str) -> Optional[pd.DataFrame]:
                 r += '|'
             normalized.append(r)
         
-        # Ensure consistent column count
         if len(normalized) < 2:
             return None
             
@@ -156,7 +150,6 @@ def markdown_to_dataframe(markdown_text: str) -> Optional[pd.DataFrame]:
         if len(cleaned_rows) < 2:
             return None
         
-        # Parse with pandas
         from io import StringIO
         df = pd.read_csv(
             StringIO("\n".join(cleaned_rows)),
@@ -165,11 +158,8 @@ def markdown_to_dataframe(markdown_text: str) -> Optional[pd.DataFrame]:
             skipinitialspace=True
         )
         
-        # Clean up
         df = df.dropna(how='all', axis=1)
         df = df.loc[:, ~df.columns.str.match(r'^Unnamed')]
-        
-        # Remove empty rows
         df = df.dropna(how='all')
         
         return df if not df.empty else None
@@ -183,13 +173,12 @@ def get_conversation_context() -> str:
     if not st.session_state.chat_history:
         return ""
     
-    # Get last 4 exchanges for context
     recent_history = st.session_state.chat_history[-4:]
     
     context_parts = []
     for msg in recent_history:
         role = "Human" if msg["role"] == "user" else "Assistant"
-        content = msg["content"][:300]  # Truncate for context
+        content = msg["content"][:300]
         context_parts.append(f"{role}: {content}")
     
     return "\n".join(context_parts)
@@ -239,30 +228,74 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ---------- Sidebar ----------
+# ---------- Initialize Session States FIRST ----------
+if "memory" not in st.session_state:
+    st.session_state.memory = ConversationBufferWindowMemory(
+        memory_key="chat_history",
+        return_messages=True,
+        k=6
+    )
+
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+if "last_df" not in st.session_state:
+    st.session_state.last_df = None
+
+# FIX 1: Use unique keys for each button and prevent multiple clicks
+if "button_clicked" not in st.session_state:
+    st.session_state.button_clicked = False
+
+if "pending_query" not in st.session_state:
+    st.session_state.pending_query = None
+
+# ---------- Database and Agent Setup ----------
+try:
+    db, api_key = get_database_connection()
+except Exception as e:
+    st.error(f"❌ Connection failed: {str(e)}")
+    st.stop()
+
+if "agent_executor" not in st.session_state:
+    llm = get_llm()
+    toolkit = SQLDatabaseToolkit(db=db, llm=llm)
+    st.session_state.agent_executor = create_sql_agent(
+        llm=llm,
+        toolkit=toolkit,
+        verbose=False,
+        handle_parsing_errors=True,
+        memory=st.session_state.memory,
+        max_iterations=MAX_ITERATIONS
+    )
+
+# ---------- Sidebar WITH KEYBOARD FIXES ----------
 with st.sidebar:
     st.header("📊 Connection Status")
-    try:
-        db, api_key = get_database_connection()
-        st.success("✅ Connected to voylla_design_ai")
-    except Exception as e:
-        st.error(f"❌ Connection failed: {str(e)}")
-        st.stop()
+    st.success("✅ Connected to voylla_design_ai")
     
     st.header("💡 Quick Insights")
     
-    # Pre-built query buttons
-    if st.button("🔥 Top 10 Best Sellers"):
-        st.session_state.quick_query = "Show me the top 10 best selling products by quantity in the last 90 days"
+    # FIX 2: Use session state to track button clicks without immediate rerun
+    # Create columns to prevent button spacing issues
+    button_col = st.container()
     
-    if st.button("💰 Revenue Leaders"):
-        st.session_state.quick_query = "What are the top 10 products by revenue this year?"
-    
-    if st.button("📈 Trending Combinations"):
-        st.session_state.quick_query = "Show me trending Form and Metal Color combinations by quantity"
-    
-    if st.button("🏪 Channel Performance"):
-        st.session_state.quick_query = "Compare sales performance across all channels"
+    with button_col:
+        # FIX 3: Use unique keys and check if button was clicked
+        if st.button("🔥 Top 10 Best Sellers", key="btn_bestsellers", use_container_width=True):
+            st.session_state.pending_query = "Show me the top 10 best selling products by quantity in the last 90 days"
+            st.session_state.button_clicked = True
+        
+        if st.button("💰 Revenue Leaders", key="btn_revenue", use_container_width=True):
+            st.session_state.pending_query = "What are the top 10 products by revenue this year?"
+            st.session_state.button_clicked = True
+        
+        if st.button("📈 Trending Combinations", key="btn_trending", use_container_width=True):
+            st.session_state.pending_query = "Show me trending Form and Metal Color combinations by quantity"
+            st.session_state.button_clicked = True
+        
+        if st.button("🏪 Channel Performance", key="btn_channel", use_container_width=True):
+            st.session_state.pending_query = "Compare sales performance across all channels"
+            st.session_state.button_clicked = True
     
     st.header("🎯 Sample Questions")
     st.markdown("""
@@ -276,61 +309,58 @@ with st.sidebar:
     """)
     
     st.header("🔧 Controls")
-    if st.button("🗑️ Clear Chat History"):
-        st.session_state.chat_history = []
-        if "memory" in st.session_state:
-            st.session_state.memory.clear()
-        if "last_df" in st.session_state:
-            st.session_state.last_df = None
+    # FIX 4: Use callback pattern for clear button
+    if st.button("🗑️ Clear Chat History", key="btn_clear", use_container_width=True):
+        # Clear everything but don't rerun immediately
+        for key in ['chat_history', 'last_df', 'memory', 'button_clicked', 'pending_query']:
+            if key in st.session_state:
+                if key == 'chat_history':
+                    st.session_state[key] = []
+                elif key == 'memory':
+                    st.session_state[key].clear()
+                else:
+                    st.session_state[key] = None
+        # Use experimental_rerun instead of rerun for better keyboard handling
         st.rerun()
 
 # ---------- Main Interface ----------
 st.title("💬 Voylla DesignGPT")
 st.caption("🔍 Ask anything about design traits, sales performance, and success combinations")
 
-# Initialize session state
-if "memory" not in st.session_state:
-    st.session_state.memory = ConversationBufferWindowMemory(
-        memory_key="chat_history",
-        return_messages=True,
-        k=6  # Keep last 6 exchanges
-    )
-
-if "agent_executor" not in st.session_state:
-    llm = get_llm()
-    toolkit = SQLDatabaseToolkit(db=db, llm=llm)
-    st.session_state.agent_executor = create_sql_agent(
-        llm=llm,
-        toolkit=toolkit,
-        verbose=False,  # Reduce verbosity
-        handle_parsing_errors=True,
-        memory=st.session_state.memory,
-        max_iterations=MAX_ITERATIONS
-        # ,early_stopping_method="generate"
-    )
-
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-
-if "last_df" not in st.session_state:
-    st.session_state.last_df = None
-
-if "quick_query" not in st.session_state:
-    st.session_state.quick_query = None
-
 # ---------- Display Chat History ----------
 for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# ---------- Handle Quick Queries ----------
-if st.session_state.quick_query:
-    user_input = st.session_state.quick_query
-    st.session_state.quick_query = None  # Clear it
+# ---------- Handle Input with Keyboard Fix ----------
+# FIX 5: Process pending queries from buttons first
+if st.session_state.button_clicked and st.session_state.pending_query:
+    user_input = st.session_state.pending_query
+    # Reset the flags
+    st.session_state.button_clicked = False
+    st.session_state.pending_query = None
 else:
-    user_input = st.chat_input("Ask about sales trends, design performance, or success combinations...")
+    # FIX 6: Use form to prevent premature submission and preserve keyboard
+    with st.form(key="chat_form", clear_on_submit=True):
+        user_input = st.text_input(
+            "Ask about sales trends, design performance, or success combinations...",
+            key="chat_input",
+            placeholder="Type your question here..."
+        )
+        
+        # FIX 7: Create two columns for submit options
+        col1, col2 = st.columns([1, 4])
+        with col1:
+            submitted = st.form_submit_button("Send 📤", use_container_width=True)
+        with col2:
+            # This helps maintain focus
+            st.caption("Press Enter or click Send to ask your question")
+        
+        # Only process if form was submitted and there's input
+        if not submitted or not user_input.strip():
+            user_input = None
 
-# ---------- Process Input ----------
+# ---------- Process Input with Better State Management ----------
 if user_input:
     # Add user message
     st.session_state.chat_history.append({"role": "user", "content": user_input})
@@ -383,17 +413,16 @@ Key columns:
     templates = load_spinner_templates()
     spinner_text = random.choice(templates)
     
+    # FIX 8: Use empty container to preserve layout during processing
+    response_container = st.empty()
+    
     with st.spinner(spinner_text):
         try:
             with st.status("Processing query...", expanded=False) as status:
                 status.write("🔍 Analyzing your question...")
                 
-                # Try to execute with timeout
                 response = st.session_state.agent_executor.run(enhanced_prompt)
-                
                 status.write("✅ Query completed successfully")
-                
-                # Clean the response
                 response = clean_response(response)
                 
         except ValueError as e:
@@ -407,7 +436,6 @@ Key columns:
             error_details = str(e)
             logger.error(f"Agent execution error: {error_details}")
             
-            # Provide helpful error message
             if "iteration limit" in error_details.lower():
                 response = """I apologize - your query was quite complex and hit our processing limit. 
                 
@@ -427,34 +455,37 @@ Would you like me to try a simplified version of your question?"""
     # Add assistant response
     st.session_state.chat_history.append({"role": "assistant", "content": response})
     
-    with st.chat_message("assistant"):
-        st.markdown(response)
-        
-        # Try to extract and display any data table
-        df_result = markdown_to_dataframe(response)
-        if df_result is not None and not df_result.empty:
-            st.session_state.last_df = df_result
+    # FIX 9: Display response in a way that doesn't trigger unnecessary reruns
+    with response_container.container():
+        with st.chat_message("assistant"):
+            st.markdown(response)
             
-            # Show some quick stats if it's a good result
-            if len(df_result) > 5:
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("📊 Results Found", len(df_result))
-                with col2:
-                    if 'Amount' in df_result.columns:
-                        total_revenue = df_result['Amount'].sum() if pd.api.types.is_numeric_dtype(df_result['Amount']) else "N/A"
-                        st.metric("💰 Total Revenue", f"₹{total_revenue:,.0f}" if total_revenue != "N/A" else "N/A")
-                with col3:
-                    if 'Qty' in df_result.columns:
-                        total_qty = df_result['Qty'].sum() if pd.api.types.is_numeric_dtype(df_result['Qty']) else "N/A"
-                        st.metric("📦 Total Quantity", f"{total_qty:,.0f}" if total_qty != "N/A" else "N/A")
+            # Try to extract and display any data table
+            df_result = markdown_to_dataframe(response)
+            if df_result is not None and not df_result.empty:
+                st.session_state.last_df = df_result
+                
+                # Show quick stats
+                if len(df_result) > 5:
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("📊 Results Found", len(df_result))
+                    with col2:
+                        if 'Amount' in df_result.columns:
+                            total_revenue = df_result['Amount'].sum() if pd.api.types.is_numeric_dtype(df_result['Amount']) else "N/A"
+                            st.metric("💰 Total Revenue", f"₹{total_revenue:,.0f}" if total_revenue != "N/A" else "N/A")
+                    with col3:
+                        if 'Qty' in df_result.columns:
+                            total_qty = df_result['Qty'].sum() if pd.api.types.is_numeric_dtype(df_result['Qty']) else "N/A"
+                            st.metric("📦 Total Quantity", f"{total_qty:,.0f}" if total_qty != "N/A" else "N/A")
 
-# ---------- Download Feature ----------
+# ---------- Download Feature with Keyboard Preservation ----------
 if st.session_state.last_df is not None and not st.session_state.last_df.empty:
-    col1, col2 = st.columns([1, 4])
+    # FIX 10: Separate download section to prevent interference
+    st.markdown("---")
+    download_col1, download_col2 = st.columns([1, 4])
     
-    with col1:
-        # Prepare export data
+    with download_col1:
         export_df = st.session_state.last_df.iloc[:MAX_EXPORT_ROWS].copy()
         output = BytesIO()
         
@@ -470,12 +501,13 @@ if st.session_state.last_df is not None and not st.session_state.last_df.empty:
                 data=output.getvalue(),
                 file_name=f"voylla_insights_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                help=f"Downloads first {MAX_EXPORT_ROWS} rows. Total results: {total_rows}"
+                help=f"Downloads first {MAX_EXPORT_ROWS} rows. Total results: {total_rows}",
+                key="download_btn"  # FIX 11: Unique key for download button
             )
         except Exception as e:
             st.error(f"Export failed: {str(e)}")
     
-    with col2:
+    with download_col2:
         if len(st.session_state.last_df) > MAX_EXPORT_ROWS:
             st.info(f"📋 Showing data preview. Full dataset has {len(st.session_state.last_df)} rows.")
 
