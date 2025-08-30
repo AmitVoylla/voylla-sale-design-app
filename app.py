@@ -39,8 +39,8 @@ if not api_key:
 os.environ["OPENAI_API_KEY"] = api_key
 
 # ---------- LLM ----------
-# llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0.1)  # Better model for context
-llm = ChatOpenAI(model="gpt-5-mini", temperature=0.1)  # Better model for context
+llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0.1)  # Better model for context
+# llm = ChatOpenAI(model="gpt-5-mini", temperature=0.1)  # Better model for context
 
 
 # ---------- DB CONNECTION ----------
