@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 # coding: utf-8
-
 import streamlit as st
 from langchain_openai import ChatOpenAI
 from langchain_community.utilities.sql_database import SQLDatabase
@@ -17,24 +16,41 @@ import random
 import logging
 from typing import Optional
 
+# ---- NEW: keep keyboard focus helper ----
+import streamlit.components.v1 as components
+def keep_keyboard_focus():
+    components.html(
+        """
+        <script>
+        // Re-focus Streamlit chat input after reruns (helps on mobile)
+        const input = window.parent.document.querySelector('input[data-testid="stChatInput"]');
+        if (input) { input.focus(); }
+        </script>
+        """,
+        height=0,
+    )
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)  # fixed
 
 # ---------- Configuration ----------
-MAX_ITERATIONS = 8
-QUERY_TIMEOUT = 30
+MAX_ITERATIONS = 8  # Reduced from 15
+QUERY_TIMEOUT = 30  # seconds
 MAX_EXPORT_ROWS = 1000
 
+# ---------- Templates ----------
 TEMPLATES_FILE = "voylla_about_templates_attractive.txt"
 DEFAULT_TEMPLATES = [
     "Analyzing jewelry trends with precision ✨",
-    "Discovering design insights... 💎", 
+    "Discovering design insights... 💎",
     "Crafting your analytics report...",
     "Mining design data treasures...",
     "Polishing your sales insights... 💍"
 ]
+
 def load_spinner_templates():
+    """Load spinner templates from file or use defaults"""
     if os.path.exists(TEMPLATES_FILE):
         try:
             with open(TEMPLATES_FILE, "r", encoding="utf-8") as file:
@@ -47,6 +63,7 @@ def load_spinner_templates():
 # ---------- Database Connection ----------
 @st.cache_resource
 def get_database_connection():
+    """Create cached database connection"""
     try:
         load_dotenv()
         api_key = os.getenv("OPENAI_API_KEY")
@@ -55,21 +72,25 @@ def get_database_connection():
             st.stop()
         os.environ["OPENAI_API_KEY"] = api_key
 
+        # Database connection
         db_host = st.secrets["DB_HOST"]
         db_port = st.secrets["DB_PORT"]
         db_name = st.secrets["DB_NAME"]
         db_user = st.secrets["DB_USER"]
         db_password = st.secrets["DB_PASSWORD"]
+
         engine = create_engine(
             f"postgresql+psycopg2://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}",
             pool_pre_ping=True,
             pool_recycle=300
         )
+
         db = SQLDatabase(
             engine,
             include_tables=["voylla_design_ai"],
             schema="voylla"
         )
+
         return db, api_key
     except Exception as e:
         st.error(f"Failed to connect to database: {str(e)}")
@@ -78,6 +99,7 @@ def get_database_connection():
 # ---------- LLM Setup ----------
 @st.cache_resource
 def get_llm():
+    """Create cached LLM instance"""
     return ChatOpenAI(
         model="gpt-4.1-mini",
         temperature=0.1,
@@ -86,9 +108,11 @@ def get_llm():
 
 # ---------- Utility Functions ----------
 def clean_response(response: str) -> str:
+    """Clean and format the agent response"""
     lines = response.split('\n')
     cleaned_lines = []
     skip_line = False
+
     for line in lines:
         if any(marker in line.lower() for marker in ['action:', 'thought:', 'observation:', 'final answer:']):
             if 'final answer:' in line.lower():
@@ -98,23 +122,29 @@ def clean_response(response: str) -> str:
             continue
         if not skip_line:
             cleaned_lines.append(line)
+
     return '\n'.join(cleaned_lines).strip()
 
 def markdown_to_dataframe(markdown_text: str) -> Optional[pd.DataFrame]:
+    """Parse a markdown table into a DataFrame with better error handling"""
     try:
         lines = markdown_text.splitlines()
         header_idx = None
+
         for i in range(len(lines) - 1):
             if '|' in lines[i]:
                 sep = lines[i + 1]
                 if re.match(r'^[\s\|\-:]+$', sep) and sep.count('-') >= 2:
                     header_idx = i
                     break
+
         if header_idx is None:
             return None
+
         table_lines = [row for row in lines[header_idx:] if '|' in row and not re.match(r'^[\s\|\-:]+$', row)]
         if len(table_lines) < 2:
             return None
+
         normalized = []
         for row in table_lines:
             r = row.strip()
@@ -123,12 +153,16 @@ def markdown_to_dataframe(markdown_text: str) -> Optional[pd.DataFrame]:
             if not r.endswith('|'):
                 r += '|'
             normalized.append(r)
+
         if len(normalized) < 2:
             return None
+
         header_cols = len(normalized[0].split('|')) - 2
         cleaned_rows = [r for r in normalized if (len(r.split('|')) - 2) == header_cols]
+
         if len(cleaned_rows) < 2:
             return None
+
         from io import StringIO
         df = pd.read_csv(
             StringIO("\n".join(cleaned_rows)),
@@ -136,15 +170,18 @@ def markdown_to_dataframe(markdown_text: str) -> Optional[pd.DataFrame]:
             engine='python',
             skipinitialspace=True
         )
+
         df = df.dropna(how='all', axis=1)
         df = df.loc[:, ~df.columns.str.match(r'^Unnamed')]
         df = df.dropna(how='all')
         return df if not df.empty else None
+
     except Exception as e:
         logger.error(f"Error parsing markdown table: {str(e)}")
         return None
 
-def get_conversation_context():
+def get_conversation_context() -> str:
+    """Build conversation context from chat history"""
     if not st.session_state.chat_history:
         return ""
     recent_history = st.session_state.chat_history[-4:]
@@ -156,8 +193,9 @@ def get_conversation_context():
     return "\n".join(context_parts)
 
 def is_follow_up_question(user_input: str) -> bool:
+    """Detect if this is a follow-up question"""
     follow_up_indicators = [
-        "show me", "can you", "what about", "how about", "also", "and", 
+        "show me", "can you", "what about", "how about", "also", "and",
         "but", "however", "additionally", "similarly", "more details",
         "expand", "break down", "drill down", "compare"
     ]
@@ -170,6 +208,8 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed"
 )
+
+# Improved styling
 st.markdown("""
 <style>
 .stApp {
@@ -208,14 +248,19 @@ with st.sidebar:
         st.stop()
 
     st.header("💡 Quick Insights")
+
     if st.button("🔥 Top 10 Best Sellers"):
         st.session_state.quick_query = "Show me the top 10 best selling products by quantity in the last 90 days"
+
     if st.button("💰 Revenue Leaders"):
         st.session_state.quick_query = "What are the top 10 products by revenue this year?"
+
     if st.button("📈 Trending Combinations"):
         st.session_state.quick_query = "Show me trending Form and Metal Color combinations by quantity"
+
     if st.button("🏪 Channel Performance"):
         st.session_state.quick_query = "Compare sales performance across all channels"
+
     st.header("🎯 Sample Questions")
     st.markdown("""
     • Best selling trait combos last 90 days
@@ -226,6 +271,7 @@ with st.sidebar:
     • What's trending in Traditional vs Contemporary?
     • Performance of Oxidized vs Gold finishes
     """)
+
     st.header("🔧 Controls")
     if st.button("🗑️ Clear Chat History"):
         st.session_state.chat_history = []
@@ -233,12 +279,13 @@ with st.sidebar:
             st.session_state.memory.clear()
         if "last_df" in st.session_state:
             st.session_state.last_df = None
-        # st.rerun()  # <--- DO NOT CALL rerun, this solves keyboard focus!
+        st.rerun()
 
 # ---------- Main Interface ----------
 st.title("💬 Voylla DesignGPT")
 st.caption("🔍 Ask anything about design traits, sales performance, and success combinations")
 
+# Initialize session state
 if "memory" not in st.session_state:
     st.session_state.memory = ConversationBufferWindowMemory(
         memory_key="chat_history",
@@ -268,24 +315,28 @@ for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# ---------- Input widget (keyboard fix: assign persistent key) ----------
+# ---------- Handle Quick Queries ----------
 if st.session_state.quick_query:
     user_input = st.session_state.quick_query
     st.session_state.quick_query = None
 else:
-    user_input = st.text_input(
-        "Ask about sales trends, design performance, or success combinations...",
-        key="main_input"
-    )
+    user_input = st.chat_input("Ask about sales trends, design performance, or success combinations...")
+
+# ---- Keep keyboard focused AFTER the chat_input renders ----
+keep_keyboard_focus()
 
 # ---------- Process Input ----------
 if user_input:
+    # Add user message
     st.session_state.chat_history.append({"role": "user", "content": user_input})
+
     with st.chat_message("user"):
         st.markdown(user_input)
+
     # Build enhanced prompt with context
     conversation_context = get_conversation_context()
     is_follow_up = is_follow_up_question(user_input)
+
     enhanced_prompt = f"""
 You are Voylla DesignGPT, an expert SQL analytics assistant for jewelry sales data.
 # CONVERSATION CONTEXT
@@ -316,35 +367,49 @@ Key columns:
 # USER QUESTION
 {user_input}
 """
-    try:
-        response = st.session_state.agent_executor.run(enhanced_prompt)
-        response = clean_response(response)
-    except ValueError as e:
-        error_msg = str(e)
-        if "Could not parse LLM output:" in error_msg:
-            response = error_msg.split("Could not parse LLM output:")[-1].strip()
-        else:
-            response = f"I encountered a parsing error. Let me try a simpler approach to your question: {error_msg}"
-    except Exception as e:
-        error_details = str(e)
-        logger.error(f"Agent execution error: {error_details}")
-        if "iteration limit" in error_details.lower():
-            response = (
-                "I apologize - your query was complex and hit our processing limit.\n"
-                "Try asking for specific time periods (e.g., 'last 30 days'), focus on one attribute at a time, "
-                "or ask for 'top 10' results. Want to try a simpler question?"
-            )
-        elif "timeout" in error_details.lower():
-            response = "The query took too long. Try a smaller date range or more specific filters."
-        else:
-            response = f"I couldn't process your request. Try rephrasing. Error: {error_details}"
 
+    templates = load_spinner_templates()
+    spinner_text = random.choice(templates)
+
+    # ---- CHANGED: No st.status banner; only spinner ----
+    with st.spinner(spinner_text):
+        try:
+            response = st.session_state.agent_executor.run(enhanced_prompt)
+            response = clean_response(response)
+        except ValueError as e:
+            error_msg = str(e)
+            if "Could not parse LLM output:" in error_msg:
+                response = error_msg.split("Could not parse LLM output:")[-1].strip()
+            else:
+                response = f"I encountered a parsing error. Let me try a simpler approach to your question: {error_msg}"
+        except Exception as e:
+            error_details = str(e)
+            logger.error(f"Agent execution error: {error_details}")
+            if "iteration limit" in error_details.lower():
+                response = (
+                    "I apologize - your query was quite complex and hit our processing limit.\n\n"
+                    "Try a simpler approach:\n"
+                    "- Ask for a specific time period (e.g., 'last 30 days')\n"
+                    "- Focus on one main design attribute at a time\n"
+                    "- Start with 'top 10' or 'top 20' results"
+                )
+            elif "timeout" in error_details.lower():
+                response = "The query took too long to process. Try a smaller date range or more specific filters."
+            else:
+                response = f"I encountered an issue processing your request. Error: {error_details}"
+
+    # Add assistant response
     st.session_state.chat_history.append({"role": "assistant", "content": response})
+
     with st.chat_message("assistant"):
         st.markdown(response)
+
+        # Try to extract and display any data table
         df_result = markdown_to_dataframe(response)
         if df_result is not None and not df_result.empty:
             st.session_state.last_df = df_result
+
+            # Show quick stats if it's a good result
             if len(df_result) > 5:
                 col1, col2, col3 = st.columns(3)
                 with col1:
@@ -361,14 +426,18 @@ Key columns:
 # ---------- Download Feature ----------
 if st.session_state.last_df is not None and not st.session_state.last_df.empty:
     col1, col2 = st.columns([1, 4])
+
     with col1:
         export_df = st.session_state.last_df.iloc[:MAX_EXPORT_ROWS].copy()
         output = BytesIO()
+
         try:
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 export_df.to_excel(writer, index=False, sheet_name='Design_Insights')
+
             rows_exported = len(export_df)
             total_rows = len(st.session_state.last_df)
+
             st.download_button(
                 f"📥 Download Excel ({rows_exported} rows)",
                 data=output.getvalue(),
@@ -378,10 +447,12 @@ if st.session_state.last_df is not None and not st.session_state.last_df.empty:
             )
         except Exception as e:
             st.error(f"Export failed: {str(e)}")
+
     with col2:
         if len(st.session_state.last_df) > MAX_EXPORT_ROWS:
             st.info(f"📋 Showing data preview. Full dataset has {len(st.session_state.last_df)} rows.")
 
+# ---------- Footer ----------
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #666; font-size: 0.8em;'>
