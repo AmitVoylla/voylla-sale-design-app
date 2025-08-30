@@ -6,7 +6,7 @@ from langchain_openai import ChatOpenAI
 from langchain_community.utilities.sql_database import SQLDatabase
 from langchain.agents import create_sql_agent
 from langchain.agents.agent_toolkits.sql.toolkit import SQLDatabaseToolkit
-from langchain.memory import ConversationBufferWindowMemory  # Changed to WindowMemory
+from langchain.memory import ConversationBufferWindowMemory
 from sqlalchemy import create_engine
 from dotenv import load_dotenv
 import os
@@ -14,8 +14,11 @@ import pandas as pd
 from io import BytesIO
 import re
 import random
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime, timedelta
 
-# ---------- Optional: spinner copy -----------
+# ---------- Enhanced spinner messages -----------
 TEMPLATES_FILE = "voylla_about_templates_attractive.txt"
 if os.path.exists(TEMPLATES_FILE):
     with open(TEMPLATES_FILE, "r", encoding="utf-8") as file:
@@ -25,11 +28,12 @@ else:
         "Crunching the numbers with a sparkle ✨",
         "Polishing your insights… 💎",
         "Setting the stones in your report…",
+        "Crafting your jewelry analytics… 💍",
+        "Mining data gems for you… ⛏️",
+        "Designing your perfect answer… ✨",
     ]
 
-random_template = random.choice(lines)
-
-# ---------- Secrets / API ----------
+# ---------- Enhanced secrets handling ----------
 load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
 if not api_key:
@@ -38,37 +42,53 @@ if not api_key:
 
 os.environ["OPENAI_API_KEY"] = api_key
 
-# ---------- LLM ----------
-llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0.1)  # Better model for context
-# llm = ChatOpenAI(model="gpt-5-mini", temperature=0.1)  # Better model for context
+# ---------- LLM with error recovery ----------
+@st.cache_resource
+def get_llm():
+    return ChatOpenAI(model="gpt-4-turbo-preview", temperature=0.1)
 
+llm = get_llm()
 
-# ---------- DB CONNECTION ----------
-db_host = st.secrets["DB_HOST"]
-db_port = st.secrets["DB_PORT"]
-db_name = st.secrets["DB_NAME"]
-db_user = st.secrets["DB_USER"]
-db_password = st.secrets["DB_PASSWORD"]
+# ---------- Enhanced DB CONNECTION with caching ----------
+@st.cache_resource
+def get_database_connection():
+    try:
+        db_host = st.secrets["DB_HOST"]
+        db_port = st.secrets["DB_PORT"]
+        db_name = st.secrets["DB_NAME"]
+        db_user = st.secrets["DB_USER"]
+        db_password = st.secrets["DB_PASSWORD"]
 
-engine = create_engine(
-    f"postgresql+psycopg2://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
-)
+        engine = create_engine(
+            f"postgresql+psycopg2://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}",
+            pool_pre_ping=True,
+            pool_recycle=3600
+        )
+        
+        db = SQLDatabase(
+            engine,
+            include_tables=["voylla_design_ai"],
+            schema="voylla"
+        )
+        return db
+    except Exception as e:
+        st.error(f"Database connection failed: {str(e)}")
+        st.stop()
 
-db = SQLDatabase(
-    engine,
-    include_tables=["voylla_design_ai"],
-    schema="voylla"
-)
+db = get_database_connection()
 
-# ---------- Helpers ----------
+# ---------- Enhanced markdown parser ----------
 def markdown_to_dataframe(markdown_text: str):
-    """Parse a markdown table into a DataFrame."""
-    lines = markdown_text.splitlines()
+    """Parse a markdown table into a DataFrame with better error handling."""
+    if not markdown_text or '|' not in markdown_text:
+        return None
+        
+    lines = [line.strip() for line in markdown_text.splitlines() if line.strip()]
     header_idx = None
     
     for i in range(len(lines) - 1):
         if '|' in lines[i]:
-            sep = lines[i + 1]
+            sep = lines[i + 1] if i + 1 < len(lines) else ""
             if re.match(r'^[\s\|\-:]+$', sep) and sep.count('-') >= 2:
                 header_idx = i
                 break
@@ -76,11 +96,11 @@ def markdown_to_dataframe(markdown_text: str):
     if header_idx is None:
         return None
     
-    table_lines = [row for row in lines[header_idx:] if '|' in row]
+    table_lines = [row for row in lines[header_idx:] if '|' in row and not re.match(r'^[\s\|\-:]+$', row)]
     if len(table_lines) < 2:
         return None
     
-    # normalize pipes
+    # Normalize pipes and handle edge cases
     normalized = []
     for row in table_lines:
         r = row.strip()
@@ -90,7 +110,10 @@ def markdown_to_dataframe(markdown_text: str):
             r += '|'
         normalized.append(r)
     
-    # consistent col count
+    # Ensure consistent column count
+    if not normalized:
+        return None
+        
     header_cols = len(normalized[0].split('|')) - 2
     cleaned_rows = [r for r in normalized if (len(r.split('|')) - 2) == header_cols]
     
@@ -104,35 +127,86 @@ def markdown_to_dataframe(markdown_text: str):
         )
         df = df.dropna(how='all', axis=1)
         df = df.loc[:, ~df.columns.str.match(r'^Unnamed')]
+        
+        # Clean up common data issues
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                df[col] = df[col].astype(str).str.strip()
+        
         return df
-    except Exception:
+    except Exception as e:
+        st.error(f"Table parsing error: {str(e)}")
         return None
 
+# ---------- Enhanced conversation context ----------
 def get_conversation_context():
-    """Build conversation context from chat history for better follow-ups."""
+    """Build enhanced conversation context with better formatting."""
     if not st.session_state.chat_history:
         return ""
     
-    # Get last 6 exchanges (3 user + 3 assistant) for context
-    recent_history = st.session_state.chat_history[-6:]
+    # Get last 8 exchanges for better context
+    recent_history = st.session_state.chat_history[-8:]
     
     context_parts = []
-    for msg in recent_history:
+    for i, msg in enumerate(recent_history):
         role = "Human" if msg["role"] == "user" else "Assistant"
-        content = msg["content"][:500]  # Truncate long responses
-        context_parts.append(f"{role}: {content}")
+        content = msg["content"][:600]  # Slightly longer context
+        
+        # Add timing context for recent messages
+        if i >= len(recent_history) - 2:
+            context_parts.append(f"[Recent] {role}: {content}")
+        else:
+            context_parts.append(f"{role}: {content}")
     
     return "\n".join(context_parts)
 
-# ---------- UI ----------
+# ---------- Chart generation helper ----------
+def create_chart_from_dataframe(df, chart_type="auto"):
+    """Create appropriate charts based on DataFrame structure."""
+    if df is None or df.empty:
+        return None
+    
+    # Detect numeric columns
+    numeric_cols = df.select_dtypes(include=['int64', 'float64', 'int32', 'float32']).columns.tolist()
+    categorical_cols = df.select_dtypes(include=['object', 'string']).columns.tolist()
+    
+    if len(numeric_cols) == 0:
+        return None
+    
+    # Auto-detect best chart type
+    if chart_type == "auto":
+        if len(df) <= 20 and len(categorical_cols) >= 1:
+            chart_type = "bar"
+        elif len(numeric_cols) >= 2:
+            chart_type = "scatter"
+        else:
+            chart_type = "line"
+    
+    try:
+        if chart_type == "bar" and len(categorical_cols) >= 1 and len(numeric_cols) >= 1:
+            fig = px.bar(df, x=categorical_cols[0], y=numeric_cols[0], 
+                        title=f"{numeric_cols[0]} by {categorical_cols[0]}")
+        elif chart_type == "scatter" and len(numeric_cols) >= 2:
+            fig = px.scatter(df, x=numeric_cols[0], y=numeric_cols[1])
+        elif chart_type == "line" and len(numeric_cols) >= 1:
+            fig = px.line(df, y=numeric_cols[0], title=f"Trend of {numeric_cols[0]}")
+        else:
+            return None
+            
+        fig.update_layout(height=400)
+        return fig
+    except Exception:
+        return None
+
+# ---------- Enhanced UI ----------
 st.set_page_config(
     page_title="Voylla DesignGPT",
     page_icon="💎",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
-# Light theme + particles (optional eye candy)
+# Enhanced styling
 st.markdown("""
 <style>
 .stApp {
@@ -143,37 +217,113 @@ st.markdown("""
 .stChatMessage .element-container div[data-testid="stMarkdownContainer"] {
     color:#000 !important;
 }
+.metric-card {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    padding: 1rem;
+    border-radius: 10px;
+    color: white;
+    text-align: center;
+    margin: 0.5rem 0;
+}
+.success-indicator {
+    color: #28a745;
+    font-weight: bold;
+}
+.warning-indicator {
+    color: #ffc107;
+    font-weight: bold;
+}
 </style>
 """, unsafe_allow_html=True)
 
+# ---------- Enhanced Sidebar ----------
 with st.sidebar:
-    st.header("📊 Connected")
-    st.success("Design table: voylla_design_ai")
+    st.header("📊 Connection Status")
+    st.success("✅ Design table: voylla_design_ai")
     
-    st.header("💡 Sample Questions")
-    st.write("• Best selling trait combos last 90 days")
-    st.write("• Top 20 SKUs by revenue this month")
-    st.write("• Trend of Form × Metal Color by qty")
-    st.write("• Which Design Style performs best on Myntra?")
-    st.write("• Success combinations for Wedding/Festive look")
+    # Add connection health check
+    try:
+        result = db.run("SELECT COUNT(*) as total_records FROM voylla.\"voylla_design_ai\" LIMIT 1")
+        if result:
+            record_count = result.strip().split('\n')[-1].strip('[]()').split(',')[0] if result else "Unknown"
+            st.info(f"📈 Total records: {record_count}")
+    except:
+        st.warning("⚠️ Connection check failed")
     
-    # Add context controls
+    st.header("💡 Enhanced Sample Questions")
+    
+    # Categorized sample questions
+    with st.expander("📈 Sales Performance", expanded=True):
+        sample_questions = [
+            "Best selling trait combos last 90 days",
+            "Top 20 SKUs by revenue this month", 
+            "Which Design Style performs best on Myntra?",
+            "Revenue trends by month for last 6 months"
+        ]
+        for q in sample_questions:
+            if st.button(f"• {q}", key=f"perf_{q}"):
+                st.session_state.auto_question = q
+    
+    with st.expander("🎨 Design Analysis"):
+        design_questions = [
+            "Trend of Form × Metal Color by qty",
+            "Success combinations for Wedding/Festive look",
+            "Most popular Central Stone by category",
+            "Contemporary vs Traditional design performance"
+        ]
+        for q in design_questions:
+            if st.button(f"• {q}", key=f"design_{q}"):
+                st.session_state.auto_question = q
+    
+    with st.expander("📊 Channel Analysis"):
+        channel_questions = [
+            "Performance comparison across all channels",
+            "Best performing designs on each platform",
+            "Channel-wise AOV analysis"
+        ]
+        for q in channel_questions:
+            if st.button(f"• {q}", key=f"channel_{q}"):
+                st.session_state.auto_question = q
+    
     st.header("🔧 Context Settings")
-    if st.button("Clear Chat History"):
-        st.session_state.chat_history = []
-        st.session_state.memory.clear()
-        st.rerun()
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🗑️ Clear Chat"):
+            st.session_state.chat_history = []
+            st.session_state.memory.clear()
+            st.rerun()
+    
+    with col2:
+        show_charts = st.checkbox("📊 Auto Charts", value=True)
+    
+    # Memory usage indicator
+    memory_size = len(st.session_state.chat_history)
+    if memory_size > 0:
+        st.caption(f"💭 Chat history: {memory_size} messages")
 
+# ---------- Main Title ----------
 st.title("💬 Voylla DesignGPT")
 st.caption("Ask anything about design traits, sales performance, and success combinations.")
 
-# ---------- Memory / Agent (Improved) ----------
+# Add quick stats if available
+try:
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown('<div class="metric-card">📊 Real-time Analytics</div>', unsafe_allow_html=True)
+    with col2:
+        st.markdown('<div class="metric-card">🎨 Design Intelligence</div>', unsafe_allow_html=True)
+    with col3:
+        st.markdown('<div class="metric-card">💎 Sales Insights</div>', unsafe_allow_html=True)
+except:
+    pass
+
+# ---------- Enhanced Memory / Agent ----------
 if "memory" not in st.session_state:
-    # Use WindowMemory to keep recent conversations
     st.session_state.memory = ConversationBufferWindowMemory(
         memory_key="chat_history",
         return_messages=True,
-        k=10  # Keep last 10 exchanges
+        k=12  # Increased for better context
     )
 
 if "agent_executor" not in st.session_state:
@@ -184,26 +334,26 @@ if "agent_executor" not in st.session_state:
         verbose=True,
         handle_parsing_errors=True,
         memory=st.session_state.memory,
-        max_iterations=8  # Prevent infinite loops
-        # ,early_stopping_method="generate"
+        max_iterations=10,  # Allow more iterations for complex queries
+        early_stopping_method="generate"
     )
 
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
+# Initialize session state variables
+for key in ["chat_history", "last_df", "last_query_result", "auto_question"]:
+    if key not in st.session_state:
+        st.session_state[key] = [] if key == "chat_history" else None
 
-if "last_df" not in st.session_state:
-    st.session_state.last_df = None
-
-if "last_query_result" not in st.session_state:
-    st.session_state.last_query_result = None
-
-# ---------- Render history ----------
+# ---------- Render chat history ----------
 for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# ---------- Input ----------
-user_input = st.chat_input("Ask about sales or design trends…")
+# ---------- Handle auto-generated questions ----------
+if "auto_question" in st.session_state and st.session_state.auto_question:
+    user_input = st.session_state.auto_question
+    st.session_state.auto_question = None
+else:
+    user_input = st.chat_input("Ask about sales or design trends…")
 
 if user_input:
     st.session_state.chat_history.append({"role": "user", "content": user_input})
@@ -211,161 +361,203 @@ if user_input:
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # ---------- IMPROVED SYSTEM PROMPT WITH CONTEXT ----------
+    # ---------- ENHANCED SYSTEM PROMPT ----------
     conversation_context = get_conversation_context()
     
-    # Check if this is a follow-up question
-    follow_up_indicators = ["show me", "can you", "what about", "how about", "also", "and", "but", "however", "additionally", "similarly"]
+    # Better follow-up detection
+    follow_up_indicators = [
+        "show me", "can you", "what about", "how about", "also", "and", 
+        "but", "however", "additionally", "similarly", "compare", "versus",
+        "breakdown", "details", "more", "expand", "drill down"
+    ]
     is_follow_up = any(indicator in user_input.lower() for indicator in follow_up_indicators) or len(st.session_state.chat_history) > 1
 
+    # Enhanced prompt with better context awareness
     prompt = f"""
-You are Voylla DesignGPT, an expert SQL/analytics assistant for Voylla jewelry data.
+You are Voylla DesignGPT, an expert SQL/analytics assistant for Voylla jewelry data analysis.
 
 # CONVERSATION CONTEXT
-{"This appears to be a follow-up question. " if is_follow_up else ""}Here's our recent conversation:
+{"🔄 FOLLOW-UP DETECTED: This appears to be a follow-up question. Build upon previous analysis. " if is_follow_up else ""}
+
+Recent conversation:
 {conversation_context}
 
-# SAFETY / GUARANTEES
-- **Never** run mutating queries. Disallow: DROP, DELETE, UPDATE, INSERT, ALTER, TRUNCATE, CREATE, GRANT, REVOKE.
-- Read-only analytical SELECTs only.
-- Return complete tables (no truncation) unless the user explicitly asks for a LIMIT.
-- Use **PostgreSQL** syntax and always **double-quote** column names.
+# ENHANCED SAFETY PROTOCOLS
+- **STRICTLY READ-ONLY**: Never run DROP, DELETE, UPDATE, INSERT, ALTER, TRUNCATE, CREATE, GRANT, REVOKE
+- **Complete Results**: Return ALL rows unless user explicitly requests LIMIT
+- **PostgreSQL Syntax**: Always double-quote column names, use proper PostgreSQL functions
+- **Error Recovery**: If query fails, suggest simpler alternatives
 
-# DATABASE SCHEMA
-Table: voylla."voylla_design_ai"
+# DATABASE SCHEMA: voylla."voylla_design_ai"
 
-## COLUMN DEFINITIONS & DATA TYPES
+## KEY COLUMNS FOR ANALYSIS
+### Transaction & Business Data
+- **"Date"** (timestamp) — Transaction date (DD/MM/YYYY HH:MM)
+- **"Channel"** (text) — Sales platform (Cloudtail, FLIPKART, MYNTRA, NYKAA, etc.)
+- **"Sale Order Item Status"** (text) — Order status (DISPATCHED, DELIVERED, CANCELLED)
+- **"Qty"** (integer) — Units sold
+- **"Amount"** (numeric) — Revenue (Qty × price)
+- **"MRP"** (numeric) — Maximum Retail Price
+- **"Cost Price"** (numeric) — Unit cost
+- **"Discount"** (numeric) — Discount applied
 
-### IDENTIFIERS & METADATA
-- **"EAN"** (text) — Product barcode/identifier (e.g., 8.90512E+12)
-- **"Product Code"** (text) — Voylla internal SKU (e.g., VMJAI41936)
-- **"Collection"** (text) — Product collection name (e.g., "Indigo Affair")
-- **"Image Url"** (text) — Product image URL
+### Product Identification
+- **"EAN"** (text) — Product barcode
+- **"Product Code"** (text) — SKU identifier
+- **"Collection"** (text) — Product collection
+- **"Category"** (text) — Main category (Earrings, Necklaces, Rings)
+- **"Sub-Category"** (text) — Subcategory (Studs, Hoops, Chandbali)
 
-### TRANSACTION DATA
-- **"Date"** (timestamp) — Order/transaction date (format: DD/MM/YYYY HH:MM)
-- **"Channel"** (text) — Sales channel (e.g., "Cloudtail-VRP", "FLIPKART_MH", "MYNTRA SOR", "NYKAA_FASHION_53GBAPL")
-- **"Type"** (text) — Transaction type (appears to be "Online" for e-commerce)
-- **"Sale Order Item Status"** (text) — Order status (DISPATCHED, DELIVERED, CANCELLED, etc.)
+### Design Intelligence Attributes
+- **"Design Style"** (text) — Aesthetic (Tribal, Contemporary, Traditional/Ethnic, Minimalist)
+- **"Form"** (text) — Shape (Triangle, Stud, Hoop, Jhumka, Ear Cuff)
+- **"Metal Color"** (text) — Finish (Antique Silver, Yellow Gold, Rose Gold, Silver, Antique Gold, Oxidized Black)
+- **"Look"** (text) — Occasion/vibe (Oxidized, Everyday, Festive, Party, Wedding)
+- **"Craft Style"** (text) — Technique (Handcrafted, etc.)
+- **"Central Stone"** (text) — Primary gemstone
+- **"Surrounding Layout"** (text) — Stone arrangement
+- **"Stone Setting"** (text) — Mounting style
+- **"Style Motif"** (text) — Design theme (Geometric, Floral, Abstract)
 
-### PRODUCT CLASSIFICATION
-- **"Category"** (text) — Main product category (e.g., "Earrings", "Necklaces", "Rings")
-- **"Sub-Category"** (text) — Product subcategory (e.g., "Studs", "Hoops", "Chandbali")
-- **"Look"** (text) — Style occasion/vibe (e.g., "Oxidized", "Everyday", "Festive", "Party", "Wedding")
+# MANDATORY FILTERS
+- **Always exclude cancelled**: WHERE "Sale Order Item Status" <> 'CANCELLED'
+- **Date handling**: If no date specified, use ALL available data
+- **Channel analysis**: Group by "Channel" when comparing platforms
 
-### DESIGN ATTRIBUTES
-- **"Design Style"** (text) — Overall design aesthetic (e.g., "Tribal", "Contemporary", "Traditional/Ethnic", "Minimalist")
-- **"Form"** (text) — Physical shape/structure (e.g., "Triangle", "Stud", "Hoop", "Jhumka", "Ear Cuff")
-- **"Metal Color"** (text) — Metal finish (e.g., "Antique Silver", "Yellow Gold", "Rose Gold", "Silver", "Antique Gold", "Oxidized Black")
-- **"Craft Style"** (text) — Manufacturing/craft technique (e.g., "Handcrafted", may include up to 2 labels joined by ' | ')
-- **"Central Stone"** (text) — Primary gemstone/material (can be empty)
-- **"Surrounding Layout"** (text) — Stone arrangement pattern (can be empty)
-- **"Stone Setting"** (text) — How stones are mounted (e.g., "Enamel Panel", "Prong Setting", "Mixed")
-- **"Style Motif"** (text) — Design theme/pattern (e.g., "Geometric", "Floral", "Abstract")
+# ENHANCED METRICS DEFINITIONS
+- **Total Quantity**: SUM("Qty")
+- **Total Revenue**: SUM("Amount")
+- **Average Order Value (AOV)**: SUM("Amount") / NULLIF(SUM("Qty"), 0)
+- **Success Score**: Rank by both quantity and revenue
+- **Profit Margin**: (SUM("Amount") - SUM("Cost Price" * "Qty")) / NULLIF(SUM("Amount"), 0) * 100
 
-### FINANCIAL DATA
-- **"Qty"** (integer) — Quantity sold in this transaction
-- **"Amount"** (numeric) — Total revenue for this line item (Qty × selling price)
-- **"MRP"** (numeric) — Maximum Retail Price per unit
-- **"Cost Price"** (numeric) — Cost per unit to Voylla
-- **"Discount"** (numeric) — Discount amount or rate applied
+# INTELLIGENT QUERY PATTERNS
+## For Trending Analysis:
+```sql
+SELECT 
+    EXTRACT(YEAR FROM "Date"::date) as year,
+    EXTRACT(MONTH FROM "Date"::date) as month,
+    "Design Style",
+    SUM("Qty") as total_qty,
+    SUM("Amount") as total_revenue
+FROM voylla."voylla_design_ai"
+WHERE "Sale Order Item Status" <> 'CANCELLED'
+GROUP BY year, month, "Design Style"
+ORDER BY year DESC, month DESC, total_qty DESC;
+```
 
-### SYSTEM DATA
-- **"Last_updated_at"** (timestamp) — Record last modification time
+## For Success Combinations:
+```sql
+SELECT 
+    "Design Style", "Form", "Metal Color", "Look",
+    COUNT(*) as transactions,
+    SUM("Qty") as total_qty,
+    SUM("Amount") as total_revenue,
+    ROUND(SUM("Amount") / NULLIF(SUM("Qty"), 0), 2) as aov
+FROM voylla."voylla_design_ai"
+WHERE "Sale Order Item Status" <> 'CANCELLED'
+GROUP BY "Design Style", "Form", "Metal Color", "Look"
+HAVING SUM("Qty") >= 10
+ORDER BY total_qty DESC, total_revenue DESC
+LIMIT 15;
+```
 
-# GLOBAL FILTERS (APPLY BY DEFAULT)
-- Exclude cancelled: "Sale Order Item Status" <> 'CANCELLED'
-- If user asks for "online" vs "offline", infer using "Channel". Otherwise, include all channels.
-- If date range unspecified, use **all available dates**.
+# ADVANCED FOLLOW-UP HANDLING
+- **Expansion requests**: "show more details" → Add more columns or increase LIMIT
+- **Filtering requests**: "what about gold items" → Add WHERE "Metal Color" LIKE '%Gold%'
+- **Comparison requests**: "compare X vs Y" → Use CASE statements or UNION
+- **Time analysis**: "trends over time" → Add date grouping
+- **Reference previous results**: Start with "Building on our previous analysis..."
 
-# METRICS DEFINITIONS
-- **Quantity sold**: SUM("Qty")
-- **Revenue**: SUM("Amount") 
-- **AOV** (if asked): SUM("Amount") / NULLIF(SUM("Qty"),0)
-- **Discount rate** (if asked): average of "Discount" or ratio as described by user — ask back if ambiguous
-- **Success combination** = any combination of traits that maximizes **Qty** and/or **Amount**
+# ENHANCED OUTPUT FORMATTING
+- **Always** return results as clean markdown tables
+- **Include context**: "Based on X records from Y date range..."
+- **Highlight insights**: Bold key findings in the explanation
+- **Suggest follow-ups**: End with "Would you like me to analyze [specific aspect]?"
 
-**Primary traits for analysis**: ("Design Style","Form","Metal Color","Craft Style","Central Stone","Surrounding Layout","Stone Setting","Style Motif","Look")
-
-# FOLLOW-UP HANDLING
-- If the user says "show me more details" or similar, expand on the previous analysis
-- If they ask for "top 10" after showing top 5, modify the previous query  
-- If they want to "filter by X" or "what about Y", apply additional filters to previous context
-- If they ask comparative questions like "what about gold vs silver", create comparisons
-- Reference previous results when relevant: "Based on the previous analysis showing..."
-
-# QUERY PATTERNS
-- For **trending designs**: GROUP BY date bucket (e.g., month) and Design Style
-- For **success combinations**: GROUP BY 3–5 traits (avoid overly wide groups); order by SUM("Qty") DESC then SUM("Amount") DESC
-- For **channel breakdown**: include "Channel" in SELECT/GROUP BY
-- For **top SKUs**: group or filter by "Product Code"
-- Always **quote** column names and fully qualify the table as voylla."voylla_design_ai"
-
-# OUTPUT RULES
-- Return results as a markdown table with **all** rows (unless user asks a LIMIT)
-- If the user asks for a chart, return a small aggregated table that can be easily charted by Streamlit later
-- If a question is ambiguous, make a **reasonable assumption** and state it briefly above the table
-- For follow-up questions, acknowledge the previous context: "Building on the previous analysis..." or "Expanding on those results..."
-
-# For Non-Database Questions:
-- Respond naturally and helpfully
-- Handle greetings, casual chat, and general knowledge  
-- Be conversational and friendly
-
-# CURRENT USER QUESTION
+# CURRENT ANALYSIS REQUEST
 {user_input}
+
+Remember: Be conversational, insightful, and always build upon previous context when applicable.
 """
 
-    # ---------- Execute ----------
+    # ---------- Enhanced execution with better error handling ----------
+    random_template = random.choice(lines)
+    
     with st.spinner(random_template.strip()):
         try:
             response = st.session_state.agent_executor.run(prompt)
-            
-            # Store the result for potential follow-ups
             st.session_state.last_query_result = response
             
         except ValueError as e:
             raw = str(e)
-            response = raw.split("Could not parse LLM output:")[-1].strip(" ") if "Could not parse LLM output:" in raw else raw
+            if "Could not parse LLM output:" in raw:
+                response = raw.split("Could not parse LLM output:")[-1].strip()
+            else:
+                response = f"I encountered a parsing issue. Let me try a different approach: {raw}"
+                
         except Exception as e:
-            response = f"I apologize, but I encountered an error: {str(e)}. Could you please rephrase your question?"
+            error_msg = str(e)
+            if "rate limit" in error_msg.lower():
+                response = "⏱️ I'm experiencing high demand. Please wait a moment and try again."
+            elif "connection" in error_msg.lower():
+                response = "🔌 Database connection issue. Please check your connection and try again."
+            else:
+                response = f"I apologize, but I encountered an error: {error_msg}. Could you please rephrase your question?"
 
     st.session_state.chat_history.append({"role": "assistant", "content": response})
     
     with st.chat_message("assistant"):
         st.markdown(response)
 
-    # try to parse result table for download
+    # ---------- Enhanced table parsing and visualization ----------
     df_res = markdown_to_dataframe(response)
     if df_res is not None and not df_res.empty:
         st.session_state.last_df = df_res
+        
+        # Auto-generate charts if enabled
+        if 'show_charts' in locals() and show_charts and len(df_res) > 1:
+            chart = create_chart_from_dataframe(df_res)
+            if chart:
+                st.plotly_chart(chart, use_container_width=True)
 
-# # ---------- Download button ----------
-# if st.session_state.last_df is not None and not st.session_state.last_df.empty:
-#     output = BytesIO()
-#     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-#         st.session_state.last_df.to_excel(writer, index=False)
-    
-#     st.download_button(
-#         "📥 Download Excel",
-#         data=output.getvalue(),
-#         file_name="design_insights.xlsx",
-#         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-#         key="download_button_design"
-#     )
-# ---------- Download button ----------
+# ---------- Enhanced download functionality ----------
 if st.session_state.last_df is not None and not st.session_state.last_df.empty:
-    MAX_EXPORT_ROWS = 500  # <-- set whatever you want
-    export_df = st.session_state.last_df.iloc[:MAX_EXPORT_ROWS].copy()
-
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        export_df.to_excel(writer, index=False)
+    col1, col2, col3 = st.columns([1, 1, 2])
     
-    st.download_button(
-        "📥 Download Excel",
-        data=output.getvalue(),
-        file_name="design_insights.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="download_button_design"
-    )
+    with col1:
+        MAX_EXPORT_ROWS = st.selectbox("Export rows:", [100, 500, 1000, "All"], index=1)
+        if MAX_EXPORT_ROWS == "All":
+            export_df = st.session_state.last_df.copy()
+        else:
+            export_df = st.session_state.last_df.iloc[:MAX_EXPORT_ROWS].copy()
+    
+    with col2:
+        # Show data summary
+        st.caption(f"📋 {len(export_df)} rows × {len(export_df.columns)} columns")
+    
+    with col3:
+        # Enhanced download options
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            export_df.to_excel(writer, index=False, sheet_name='VoyllaData')
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+        
+        st.download_button(
+            "📥 Download Excel",
+            data=output.getvalue(),
+            file_name=f"voylla_insights_{timestamp}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_button_enhanced"
+        )
+
+# ---------- Footer with tips ----------
+st.markdown("---")
+st.markdown("""
+<div style='text-align: center; color: #666; font-size: 0.9em;'>
+💡 <b>Pro Tips:</b> Ask follow-up questions like "show me more details" or "what about gold items?" • 
+Try questions about trends, comparisons, and specific time periods • 
+Use natural language - I understand context!
+</div>
+""", unsafe_allow_html=True)
