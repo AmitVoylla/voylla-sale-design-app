@@ -1,16 +1,12 @@
 #!/usr/bin/env python
 # coding: utf-8
-# S1L1lO6I3O65Ta
-# In[ ]:
 
-#!/usr/bin/env python
-# coding: utf-8
 import streamlit as st
 from langchain_openai import ChatOpenAI
 from langchain_community.utilities.sql_database import SQLDatabase
 from langchain.agents import create_sql_agent
 from langchain.agents.agent_toolkits.sql.toolkit import SQLDatabaseToolkit
-from langchain.memory import ConversationBufferMemory
+from langchain.memory import ConversationBufferWindowMemory  # Changed to WindowMemory
 from sqlalchemy import create_engine
 from dotenv import load_dotenv
 import os
@@ -30,6 +26,7 @@ else:
         "Polishing your insights… 💎",
         "Setting the stones in your report…",
     ]
+
 random_template = random.choice(lines)
 
 # ---------- Secrets / API ----------
@@ -38,13 +35,13 @@ api_key = os.getenv("OPENAI_API_KEY")
 if not api_key:
     st.error("🔑 No OpenAI key found – please add it in your app's Secrets.")
     st.stop()
+
 os.environ["OPENAI_API_KEY"] = api_key
 
 # ---------- LLM ----------
-llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
+llm = ChatOpenAI(model="gpt-4-turbo-preview", temperature=0.1)  # Better model for context
 
 # ---------- DB CONNECTION ----------
-# keep your RDS string or use your env var
 db_host = st.secrets["DB_HOST"]
 db_port = st.secrets["DB_PORT"]
 db_name = st.secrets["DB_NAME"]
@@ -66,17 +63,21 @@ def markdown_to_dataframe(markdown_text: str):
     """Parse a markdown table into a DataFrame."""
     lines = markdown_text.splitlines()
     header_idx = None
+    
     for i in range(len(lines) - 1):
         if '|' in lines[i]:
             sep = lines[i + 1]
             if re.match(r'^[\s\|\-:]+$', sep) and sep.count('-') >= 2:
                 header_idx = i
                 break
+    
     if header_idx is None:
         return None
+    
     table_lines = [row for row in lines[header_idx:] if '|' in row]
     if len(table_lines) < 2:
         return None
+    
     # normalize pipes
     normalized = []
     for row in table_lines:
@@ -86,9 +87,11 @@ def markdown_to_dataframe(markdown_text: str):
         if not r.endswith('|'):
             r += '|'
         normalized.append(r)
+    
     # consistent col count
     header_cols = len(normalized[0].split('|')) - 2
     cleaned_rows = [r for r in normalized if (len(r.split('|')) - 2) == header_cols]
+    
     from io import StringIO
     try:
         df = pd.read_csv(
@@ -103,6 +106,22 @@ def markdown_to_dataframe(markdown_text: str):
     except Exception:
         return None
 
+def get_conversation_context():
+    """Build conversation context from chat history for better follow-ups."""
+    if not st.session_state.chat_history:
+        return ""
+    
+    # Get last 6 exchanges (3 user + 3 assistant) for context
+    recent_history = st.session_state.chat_history[-6:]
+    
+    context_parts = []
+    for msg in recent_history:
+        role = "Human" if msg["role"] == "user" else "Assistant"
+        content = msg["content"][:500]  # Truncate long responses
+        context_parts.append(f"{role}: {content}")
+    
+    return "\n".join(context_parts)
+
 # ---------- UI ----------
 st.set_page_config(
     page_title="Voylla DesignGPT",
@@ -114,27 +133,46 @@ st.set_page_config(
 # Light theme + particles (optional eye candy)
 st.markdown("""
 <style>
-.stApp { background-color: #fcf1ed; color: #000; font-weight: 500 }
-.stChatMessage .element-container div[data-testid="stMarkdownContainer"] { color:#000 !important; }
+.stApp {
+    background-color: #fcf1ed;
+    color: #000;
+    font-weight: 500
+}
+.stChatMessage .element-container div[data-testid="stMarkdownContainer"] {
+    color:#000 !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("📊 Connected")
-    st.success("Design table: `voylla_design_ai`")
+    st.success("Design table: voylla_design_ai")
+    
     st.header("💡 Sample Questions")
     st.write("• Best selling trait combos last 90 days")
     st.write("• Top 20 SKUs by revenue this month")
     st.write("• Trend of Form × Metal Color by qty")
     st.write("• Which Design Style performs best on Myntra?")
     st.write("• Success combinations for Wedding/Festive look")
+    
+    # Add context controls
+    st.header("🔧 Context Settings")
+    if st.button("Clear Chat History"):
+        st.session_state.chat_history = []
+        st.session_state.memory.clear()
+        st.rerun()
 
 st.title("💬 Voylla DesignGPT")
 st.caption("Ask anything about design traits, sales performance, and success combinations.")
 
-# ---------- Memory / Agent ----------
+# ---------- Memory / Agent (Improved) ----------
 if "memory" not in st.session_state:
-    st.session_state.memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+    # Use WindowMemory to keep recent conversations
+    st.session_state.memory = ConversationBufferWindowMemory(
+        memory_key="chat_history",
+        return_messages=True,
+        k=10  # Keep last 10 exchanges
+    )
 
 if "agent_executor" not in st.session_state:
     toolkit = SQLDatabaseToolkit(db=db, llm=llm)
@@ -143,11 +181,19 @@ if "agent_executor" not in st.session_state:
         toolkit=toolkit,
         verbose=True,
         handle_parsing_errors=True,
-        memory=st.session_state.memory
+        memory=st.session_state.memory,
+        max_iterations=5,  # Prevent infinite loops
+        early_stopping_method="generate"
     )
 
-if "chat_history" not in st.session_state: st.session_state.chat_history = []
-if "last_df" not in st.session_state: st.session_state.last_df = None
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+if "last_df" not in st.session_state:
+    st.session_state.last_df = None
+
+if "last_query_result" not in st.session_state:
+    st.session_state.last_query_result = None
 
 # ---------- Render history ----------
 for message in st.session_state.chat_history:
@@ -159,12 +205,23 @@ user_input = st.chat_input("Ask about sales or design trends…")
 
 if user_input:
     st.session_state.chat_history.append({"role": "user", "content": user_input})
+    
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # ---------- SYSTEM PROMPT FOR THIS APP ----------
+    # ---------- IMPROVED SYSTEM PROMPT WITH CONTEXT ----------
+    conversation_context = get_conversation_context()
+    
+    # Check if this is a follow-up question
+    follow_up_indicators = ["show me", "can you", "what about", "how about", "also", "and", "but", "however", "additionally", "similarly"]
+    is_follow_up = any(indicator in user_input.lower() for indicator in follow_up_indicators) or len(st.session_state.chat_history) > 1
+    
     prompt = f"""
-You are Voylla DesignGPT, an expert SQL/analytics assistant for Voylla.
+You are Voylla DesignGPT, an expert SQL/analytics assistant for Voylla jewelry data.
+
+# CONVERSATION CONTEXT
+{"This appears to be a follow-up question. " if is_follow_up else ""}Here's our recent conversation:
+{conversation_context}
 
 # SAFETY / GUARANTEES
 - **Never** run mutating queries. Disallow: DROP, DELETE, UPDATE, INSERT, ALTER, TRUNCATE, CREATE, GRANT, REVOKE.
@@ -174,7 +231,6 @@ You are Voylla DesignGPT, an expert SQL/analytics assistant for Voylla.
 
 # DATABASE
 Only table: voylla."voylla_design_ai"
-
 Available columns (quoted names):
 - "EAN" (text/number)
 - "Date" (timestamp) — use for time filters
@@ -185,7 +241,7 @@ Available columns (quoted names):
 - "Image Url" (text)
 - "Category" (text)
 - "Sub-Category" (text)
-- "Look" (text)  -- e.g., Everyday, Festive, Party, Wedding (standardised)
+- "Look" (text) -- e.g., Everyday, Festive, Party, Wedding (standardised)
 - "Discount" (numeric) -- selling price after discount or just discount amount; don't assume margin
 - "Qty" (integer)
 - "Amount" (numeric) -- revenue for the line
@@ -213,8 +269,14 @@ Available columns (quoted names):
 - AOV (if asked): SUM("Amount") / NULLIF(SUM("Qty"),0)
 - Discount rate (if asked): average of "Discount" or ratio as described by user — ask back if ambiguous.
 - Success combination = any combination of traits that maximizes **Qty** and/or **Amount**.
-  Typical trait set to analyze:
-  ("Design Style","Form","Metal Color","Craft Style","Central Stone","Surrounding Layout","Stone Setting","Style Motif","Look")
+Typical trait set to analyze: ("Design Style","Form","Metal Color","Craft Style","Central Stone","Surrounding Layout","Stone Setting","Style Motif","Look")
+
+# FOLLOW-UP HANDLING
+- If the user says "show me more details" or similar, expand on the previous analysis
+- If they ask for "top 10" after showing top 5, modify the previous query
+- If they want to "filter by X" or "what about Y", apply additional filters to previous context
+- If they ask comparative questions like "what about gold vs silver", create comparisons
+- Reference previous results when relevant: "Based on the previous analysis showing..."
 
 # QUERY PATTERNS
 - For **trending designs**: GROUP BY date bucket (e.g., month) and Design Style.
@@ -227,25 +289,33 @@ Available columns (quoted names):
 - Return results as a markdown table with **all** rows (unless user asks a LIMIT).
 - If the user asks for a chart, return a small aggregated table that can be easily charted by Streamlit later.
 - If a question is ambiguous, make a **reasonable assumption** and state it briefly above the table.
+- For follow-up questions, acknowledge the previous context: "Building on the previous analysis..." or "Expanding on those results..."
 
 # For Non-Database Questions:
 - Respond naturally and helpfully
 - Handle greetings, casual chat, and general knowledge
 - Be conversational and friendly
 
-# USER QUESTION
+# CURRENT USER QUESTION
 {user_input}
 """
 
     # ---------- Execute ----------
     with st.spinner(random_template.strip()):
         try:
-            response = st.session_state.agent_executor.invoke({"input": user_input})["output"]
+            response = st.session_state.agent_executor.run(prompt)
+            
+            # Store the result for potential follow-ups
+            st.session_state.last_query_result = response
+            
         except ValueError as e:
             raw = str(e)
-            response = raw.split("Could not parse LLM output:")[-1].strip(" `") if "Could not parse LLM output:" in raw else raw
+            response = raw.split("Could not parse LLM output:")[-1].strip(" ") if "Could not parse LLM output:" in raw else raw
+        except Exception as e:
+            response = f"I apologize, but I encountered an error: {str(e)}. Could you please rephrase your question?"
 
     st.session_state.chat_history.append({"role": "assistant", "content": response})
+    
     with st.chat_message("assistant"):
         st.markdown(response)
 
@@ -259,6 +329,7 @@ if st.session_state.last_df is not None and not st.session_state.last_df.empty:
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         st.session_state.last_df.to_excel(writer, index=False)
+    
     st.download_button(
         "📥 Download Excel",
         data=output.getvalue(),
