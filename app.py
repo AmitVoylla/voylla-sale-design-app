@@ -18,17 +18,37 @@ from typing import Optional
 
 # ---- NEW: keep keyboard focus helper ----
 import streamlit.components.v1 as components
+import streamlit.components.v1 as components
+
 def keep_keyboard_focus():
     components.html(
         """
         <script>
-        // Re-focus Streamlit chat input after reruns (helps on mobile)
-        const input = window.parent.document.querySelector('input[data-testid="stChatInput"]');
-        if (input) { input.focus(); }
+        function focusChatInput(){
+            const input = window.parent.document.querySelector('input[data-testid="stChatInput"]');
+            if (input) { 
+                input.focus();
+                // On mobile, request keyboard explicitly
+                setTimeout(() => { input.focus(); }, 300);
+            }
+        }
+        // Run once after page load
+        window.addEventListener('load', focusChatInput);
+
+        // Watch for Streamlit reruns (DOM changes)
+        const observer = new MutationObserver((mutations) => {
+            for (let mutation of mutations) {
+                if (mutation.addedNodes.length > 0) {
+                    focusChatInput();
+                }
+            }
+        });
+        observer.observe(window.parent.document.body, { childList: true, subtree: true });
         </script>
         """,
         height=0,
     )
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
