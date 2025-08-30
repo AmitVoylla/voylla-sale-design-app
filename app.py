@@ -4,8 +4,8 @@
 import streamlit as st
 from langchain_openai import ChatOpenAI
 from langchain_community.utilities.sql_database import SQLDatabase
-from langchain.agents import create_sql_agent
-from langchain.agents.agent_toolkits.sql.toolkit import SQLDatabaseToolkit
+from langchain_community.agent_toolkits.sql.base import create_sql_agent
+from langchain_community.agent_toolkits.sql.toolkit import SQLDatabaseToolkit
 from langchain.memory import ConversationBufferWindowMemory
 from sqlalchemy import create_engine
 from dotenv import load_dotenv
@@ -297,10 +297,11 @@ with st.sidebar:
     with col2:
         show_charts = st.checkbox("📊 Auto Charts", value=True)
     
-    # Memory usage indicator
-    memory_size = len(st.session_state.chat_history)
-    if memory_size > 0:
-        st.caption(f"💭 Chat history: {memory_size} messages")
+    # Memory usage indicator (with safe check)
+    if "chat_history" in st.session_state:
+        memory_size = len(st.session_state.chat_history)
+        if memory_size > 0:
+            st.caption(f"💭 Chat history: {memory_size} messages")
 
 # ---------- Main Title ----------
 st.title("💬 Voylla DesignGPT")
@@ -317,6 +318,11 @@ try:
         st.markdown('<div class="metric-card">💎 Sales Insights</div>', unsafe_allow_html=True)
 except:
     pass
+
+# ---------- Initialize session state FIRST ----------
+for key in ["chat_history", "last_df", "last_query_result", "auto_question"]:
+    if key not in st.session_state:
+        st.session_state[key] = [] if key == "chat_history" else None
 
 # ---------- Enhanced Memory / Agent ----------
 if "memory" not in st.session_state:
@@ -337,11 +343,6 @@ if "agent_executor" not in st.session_state:
         max_iterations=10,  # Allow more iterations for complex queries
         early_stopping_method="generate"
     )
-
-# Initialize session state variables
-for key in ["chat_history", "last_df", "last_query_result", "auto_question"]:
-    if key not in st.session_state:
-        st.session_state[key] = [] if key == "chat_history" else None
 
 # ---------- Render chat history ----------
 for message in st.session_state.chat_history:
