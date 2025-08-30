@@ -305,8 +305,8 @@ if "agent_executor" not in st.session_state:
         verbose=False,  # Reduce verbosity
         handle_parsing_errors=True,
         memory=st.session_state.memory,
-        max_iterations=MAX_ITERATIONS,
-        early_stopping_method="generate"
+        max_iterations=MAX_ITERATIONS
+        # ,early_stopping_method="generate"
     )
 
 if "chat_history" not in st.session_state:
