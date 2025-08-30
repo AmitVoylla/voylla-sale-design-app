@@ -45,7 +45,7 @@ os.environ["OPENAI_API_KEY"] = api_key
 # ---------- LLM with error recovery ----------
 @st.cache_resource
 def get_llm():
-    return ChatOpenAI(model="gpt-4-turbo-preview", temperature=0.1)
+    return ChatOpenAI(model="gpt-4.1-mini", temperature=0.1)
 
 llm = get_llm()
 
@@ -255,7 +255,7 @@ with st.sidebar:
     # Categorized sample questions
     with st.expander("📈 Sales Performance", expanded=True):
         sample_questions = [
-            "Best selling trait combos last 90 days",
+            "Best selling success combination last 90 days",
             "Top 20 SKUs by revenue this month", 
             "Which Design Style performs best on Myntra?",
             "Revenue trends by month for last 6 months"
