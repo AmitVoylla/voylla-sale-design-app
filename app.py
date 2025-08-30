@@ -240,7 +240,7 @@ Available columns (quoted names):
     # ---------- Execute ----------
     with st.spinner(random_template.strip()):
         try:
-            response = st.session_state.agent_executor.run(prompt)
+            response = st.session_state.agent_executor.invoke({"input": user_input})["output"]
         except ValueError as e:
             raw = str(e)
             response = raw.split("Could not parse LLM output:")[-1].strip(" `") if "Could not parse LLM output:" in raw else raw
