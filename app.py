@@ -332,33 +332,53 @@ for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# ---------- Handle Input with Keyboard Fix ----------
+# ---------- Handle Input with BETTER Keyboard Fix ----------
+# Add CSS to prevent keyboard issues
+st.markdown("""
+<style>
+/* CRITICAL: Prevent viewport changes that hide keyboard */
+.stApp {
+    height: 100vh !important;
+    overflow: hidden;
+}
+
+/* Keep chat input always visible */
+div[data-testid="stChatInput"] {
+    position: fixed !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    z-index: 999 !important;
+    background: white !important;
+    padding: 10px !important;
+    border-top: 1px solid #e0e0e0 !important;
+}
+
+/* Prevent mobile zoom on input focus */
+input, textarea {
+    font-size: 16px !important;
+    transform: none !important;
+}
+
+/* Ensure main content has space for fixed input */
+.main .block-container {
+    padding-bottom: 100px !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # FIX 5: Process pending queries from buttons first
 if st.session_state.button_clicked and st.session_state.pending_query:
     user_input = st.session_state.pending_query
-    # Reset the flags
+    # Reset the flags immediately to prevent loops
     st.session_state.button_clicked = False
     st.session_state.pending_query = None
 else:
-    # FIX 6: Use form to prevent premature submission and preserve keyboard
-    with st.form(key="chat_form", clear_on_submit=True):
-        user_input = st.text_input(
-            "Ask about sales trends, design performance, or success combinations...",
-            key="chat_input",
-            placeholder="Type your question here..."
-        )
-        
-        # FIX 7: Create two columns for submit options
-        col1, col2 = st.columns([1, 4])
-        with col1:
-            submitted = st.form_submit_button("Send 📤", use_container_width=True)
-        with col2:
-            # This helps maintain focus
-            st.caption("Press Enter or click Send to ask your question")
-        
-        # Only process if form was submitted and there's input
-        if not submitted or not user_input.strip():
-            user_input = None
+    # FIX 6: Use the STANDARD chat_input (not form) with special handling
+    user_input = st.chat_input(
+        "Ask about sales trends, design performance, or success combinations...",
+        key="main_chat_input"
+    )
 
 # ---------- Process Input with Better State Management ----------
 if user_input:
@@ -413,71 +433,69 @@ Key columns:
     templates = load_spinner_templates()
     spinner_text = random.choice(templates)
     
-    # FIX 8: Use empty container to preserve layout during processing
-    response_container = st.empty()
-    
-    with st.spinner(spinner_text):
-        try:
-            with st.status("Processing query...", expanded=False) as status:
-                status.write("🔍 Analyzing your question...")
-                
-                response = st.session_state.agent_executor.run(enhanced_prompt)
-                status.write("✅ Query completed successfully")
-                response = clean_response(response)
-                
-        except ValueError as e:
-            error_msg = str(e)
-            if "Could not parse LLM output:" in error_msg:
-                response = error_msg.split("Could not parse LLM output:")[-1].strip()
-            else:
-                response = f"I encountered a parsing error. Let me try a simpler approach to your question: {error_msg}"
+    # FIX 8: Process response WITHOUT causing reruns that hide keyboard
+    with st.chat_message("assistant"):
+        # Create placeholder for streaming-like effect
+        message_placeholder = st.empty()
         
-        except Exception as e:
-            error_details = str(e)
-            logger.error(f"Agent execution error: {error_details}")
+        with st.spinner(spinner_text):
+            try:
+                # Use status for better UX without causing layout shifts
+                with st.status("Processing query...", expanded=False) as status:
+                    status.write("🔍 Analyzing your question...")
+                    
+                    response = st.session_state.agent_executor.run(enhanced_prompt)
+                    status.write("✅ Query completed successfully")
+                    response = clean_response(response)
+                    
+            except ValueError as e:
+                error_msg = str(e)
+                if "Could not parse LLM output:" in error_msg:
+                    response = error_msg.split("Could not parse LLM output:")[-1].strip()
+                else:
+                    response = f"I encountered a parsing error. Let me try a simpler approach to your question: {error_msg}"
             
-            if "iteration limit" in error_details.lower():
-                response = """I apologize - your query was quite complex and hit our processing limit. 
+            except Exception as e:
+                error_details = str(e)
+                logger.error(f"Agent execution error: {error_details}")
                 
+                if "iteration limit" in error_details.lower():
+                    response = """I apologize - your query was quite complex and hit our processing limit. 
+                    
 Let me suggest a simpler approach:
 - Try asking for specific time periods (e.g., "last 30 days")
 - Focus on one main design attribute at a time
 - Ask for "top 10" or "top 20" results initially
 
 Would you like me to try a simplified version of your question?"""
-            
-            elif "timeout" in error_details.lower():
-                response = "The query took too long to process. Try asking for a smaller date range or more specific filters."
-            
-            else:
-                response = f"I encountered an issue processing your request. Could you try rephrasing your question or being more specific? Error: {error_details}"
-    
-    # Add assistant response
-    st.session_state.chat_history.append({"role": "assistant", "content": response})
-    
-    # FIX 9: Display response in a way that doesn't trigger unnecessary reruns
-    with response_container.container():
-        with st.chat_message("assistant"):
-            st.markdown(response)
-            
-            # Try to extract and display any data table
-            df_result = markdown_to_dataframe(response)
-            if df_result is not None and not df_result.empty:
-                st.session_state.last_df = df_result
                 
-                # Show quick stats
-                if len(df_result) > 5:
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("📊 Results Found", len(df_result))
-                    with col2:
-                        if 'Amount' in df_result.columns:
-                            total_revenue = df_result['Amount'].sum() if pd.api.types.is_numeric_dtype(df_result['Amount']) else "N/A"
-                            st.metric("💰 Total Revenue", f"₹{total_revenue:,.0f}" if total_revenue != "N/A" else "N/A")
-                    with col3:
-                        if 'Qty' in df_result.columns:
-                            total_qty = df_result['Qty'].sum() if pd.api.types.is_numeric_dtype(df_result['Qty']) else "N/A"
-                            st.metric("📦 Total Quantity", f"{total_qty:,.0f}" if total_qty != "N/A" else "N/A")
+                elif "timeout" in error_details.lower():
+                    response = "The query took too long to process. Try asking for a smaller date range or more specific filters."
+                
+                else:
+                    response = f"I encountered an issue processing your request. Could you try rephrasing your question or being more specific? Error: {error_details}"
+        
+        # Display the response
+        message_placeholder.markdown(response)
+        
+        # Try to extract and display any data table
+        df_result = markdown_to_dataframe(response)
+        if df_result is not None and not df_result.empty:
+            st.session_state.last_df = df_result
+            
+            # Show quick stats without causing rerun
+            if len(df_result) > 5:
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("📊 Results Found", len(df_result))
+                with col2:
+                    if 'Amount' in df_result.columns:
+                        total_revenue = df_result['Amount'].sum() if pd.api.types.is_numeric_dtype(df_result['Amount']) else "N/A"
+                        st.metric("💰 Total Revenue", f"₹{total_revenue:,.0f}" if total_revenue != "N/A" else "N/A")
+                with col3:
+                    if 'Qty' in df_result.columns:
+                        total_qty = df_result['Qty'].sum() if pd.api.types.is_numeric_dtype(df_result['Qty']) else "N/A"
+                        st.metric("📦 Total Quantity", f"{total_qty:,.0f}" if total_qty != "N/A" else "N/A")
 
 # ---------- Download Feature with Keyboard Preservation ----------
 if st.session_state.last_df is not None and not st.session_state.last_df.empty:
