@@ -295,7 +295,7 @@ with st.sidebar:
             st.rerun()
     
     with col2:
-        show_charts = st.checkbox("📊 Auto Charts", value=True)
+        show_charts = st.checkbox("📊 Auto Charts", value=False)
     
     # Memory usage indicator (with safe check)
     if "chat_history" in st.session_state:
