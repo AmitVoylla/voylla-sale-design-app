@@ -87,7 +87,7 @@ def get_database_connection():
 def get_llm():
     """Create cached LLM instance"""
     return ChatOpenAI(
-        model="gpt-4o",  # Better model for complex reasoning
+        model="gpt-4.1-mini",  # Better model for complex reasoning
         temperature=0.1,
         request_timeout=QUERY_TIMEOUT
     )
