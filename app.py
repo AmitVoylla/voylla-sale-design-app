@@ -40,7 +40,7 @@ os.environ["OPENAI_API_KEY"] = api_key
 
 # ---------- LLM ----------
 # llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0.1)  # Better model for context
-llm = ChatOpenAI(model="gpt-4o", temperature=0.1)  # Better model for context
+llm = ChatOpenAI(model="gpt-5-mini", temperature=0.1)  # Better model for context
 
 
 # ---------- DB CONNECTION ----------
@@ -184,7 +184,7 @@ if "agent_executor" not in st.session_state:
         verbose=True,
         handle_parsing_errors=True,
         memory=st.session_state.memory,
-        max_iterations=15  # Prevent infinite loops
+        max_iterations=8  # Prevent infinite loops
         # ,early_stopping_method="generate"
     )
 
