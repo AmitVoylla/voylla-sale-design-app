@@ -332,52 +332,119 @@ for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# ---------- Handle Input with BETTER Keyboard Fix ----------
-# Add CSS to prevent keyboard issues
+# ---------- Handle Input with ULTIMATE Keyboard Fix ----------
+# ULTIMATE CSS FIX - Forces keyboard to stay visible
 st.markdown("""
 <style>
-/* CRITICAL: Prevent viewport changes that hide keyboard */
-.stApp {
-    height: 100vh !important;
-    overflow: hidden;
+/* FORCE keyboard to stay visible on mobile */
+@media screen and (max-width: 768px) {
+    /* Prevent page reflow that hides keyboard */
+    html, body, #root, .stApp {
+        height: 100vh !important;
+        overflow: hidden !important;
+        position: fixed !important;
+        width: 100% !important;
+    }
+    
+    /* Force chat input to bottom and keep keyboard space */
+    div[data-testid="stChatInput"] {
+        position: fixed !important;
+        bottom: 0 !important;
+        left: 0 !important;
+        right: 0 !important;
+        z-index: 9999 !important;
+        background: white !important;
+        border-top: 2px solid #f0f0f0 !important;
+        padding: 15px !important;
+        box-shadow: 0 -5px 15px rgba(0,0,0,0.1) !important;
+    }
+    
+    /* Keep input focused and prevent zoom */
+    div[data-testid="stChatInput"] input {
+        font-size: 16px !important;
+        min-height: 44px !important;
+        border-radius: 25px !important;
+        border: 2px solid #d4af37 !important;
+        padding: 12px 20px !important;
+        background: #fafafa !important;
+    }
+    
+    /* Reserve space for fixed input */
+    .main .block-container {
+        padding-bottom: 120px !important;
+        height: calc(100vh - 120px) !important;
+        overflow-y: auto !important;
+    }
+    
+    /* Hide sidebar on mobile to give more space */
+    .stSidebar {
+        transform: translateX(-100%) !important;
+    }
 }
 
-/* Keep chat input always visible */
-div[data-testid="stChatInput"] {
-    position: fixed !important;
-    bottom: 0 !important;
-    left: 0 !important;
-    right: 0 !important;
-    z-index: 999 !important;
-    background: white !important;
-    padding: 10px !important;
-    border-top: 1px solid #e0e0e0 !important;
-}
-
-/* Prevent mobile zoom on input focus */
-input, textarea {
+/* Prevent iOS zoom and viewport changes */
+input, textarea, select {
     font-size: 16px !important;
-    transform: none !important;
+    transform-origin: left top !important;
+    zoom: 1 !important;
 }
 
-/* Ensure main content has space for fixed input */
-.main .block-container {
-    padding-bottom: 100px !important;
+/* HIDE processing status */
+div[data-testid="stStatus"] {
+    display: none !important;
+}
+
+/* HIDE spinners */
+div[data-testid="stSpinner"] {
+    display: none !important;
 }
 </style>
+
+<script>
+// JavaScript to maintain keyboard focus
+document.addEventListener('DOMContentLoaded', function() {
+    let inputElement = null;
+    
+    function findAndFocusInput() {
+        inputElement = document.querySelector('div[data-testid="stChatInput"] input');
+        if (inputElement) {
+            // Prevent blur events from hiding keyboard
+            inputElement.addEventListener('blur', function(e) {
+                setTimeout(() => {
+                    if (document.activeElement !== inputElement) {
+                        inputElement.focus();
+                    }
+                }, 50);
+            });
+        }
+    }
+    
+    // Try to find input immediately and on mutations
+    findAndFocusInput();
+    
+    // Watch for DOM changes (when Streamlit reruns)
+    const observer = new MutationObserver(function(mutations) {
+        findAndFocusInput();
+    });
+    
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true
+    });
+});
+</script>
 """, unsafe_allow_html=True)
 
-# FIX 5: Process pending queries from buttons first
+# Process pending queries from buttons
 if st.session_state.button_clicked and st.session_state.pending_query:
     user_input = st.session_state.pending_query
-    # Reset the flags immediately to prevent loops
     st.session_state.button_clicked = False
     st.session_state.pending_query = None
 else:
-    # FIX 6: Use the STANDARD chat_input (not form) with special handling
+    # Use standard chat_input with persistent focus
     user_input = st.chat_input(
-        "Ask about sales trends, design performance, or success combinations...",
-        key="main_chat_input"
+        "💬 Type your question here...",
+        key="persistent_chat"
     )
 
 # ---------- Process Input with Better State Management ----------
