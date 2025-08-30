@@ -338,11 +338,27 @@ Table: voylla."voylla_design_ai"
     if df_res is not None and not df_res.empty:
         st.session_state.last_df = df_res
 
+# # ---------- Download button ----------
+# if st.session_state.last_df is not None and not st.session_state.last_df.empty:
+#     output = BytesIO()
+#     with pd.ExcelWriter(output, engine='openpyxl') as writer:
+#         st.session_state.last_df.to_excel(writer, index=False)
+    
+#     st.download_button(
+#         "📥 Download Excel",
+#         data=output.getvalue(),
+#         file_name="design_insights.xlsx",
+#         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+#         key="download_button_design"
+#     )
 # ---------- Download button ----------
 if st.session_state.last_df is not None and not st.session_state.last_df.empty:
+    MAX_EXPORT_ROWS = 500  # <-- set whatever you want
+    export_df = st.session_state.last_df.iloc[:MAX_EXPORT_ROWS].copy()
+
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        st.session_state.last_df.to_excel(writer, index=False)
+        export_df.to_excel(writer, index=False)
     
     st.download_button(
         "📥 Download Excel",
