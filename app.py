@@ -341,7 +341,8 @@ if "agent_executor" not in st.session_state:
         handle_parsing_errors=True,
         memory=st.session_state.memory,
         max_iterations=10,  # Allow more iterations for complex queries
-        early_stopping_method="generate"
+        early_stopping_method="generate",
+        handle_parsing_errors=True
     )
 
 # ---------- Render chat history ----------
