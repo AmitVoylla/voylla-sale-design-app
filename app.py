@@ -452,11 +452,24 @@ for message in st.session_state.chat_history:
             st.markdown(message["content"])
 
 # ---------- Handle auto-generated questions ----------
-if "auto_question" in st.session_state and st.session_state.auto_question:
+# if "auto_question" in st.session_state and st.session_state.auto_question:
+#     user_input = st.session_state.auto_question
+#     st.session_state.auto_question = None
+# else:
+#     user_input = st.chat_input("Ask an executive question about sales or design trends…")
+
+# ---------- Handle auto-generated questions (fixed to keep chat box visible) ----------
+
+# 1) Always render the chat input so the keyboard never disappears on mobile
+chat_prompt = "Ask an executive question about sales or design trends…"
+user_input = st.chat_input(chat_prompt, key="chat_box")
+
+# 2) If a sidebar button queued a question, process it this run
+if st.session_state.get("auto_question"):
+    # Use the queued question for this turn, but keep the chat box rendered
     user_input = st.session_state.auto_question
-    st.session_state.auto_question = None
-else:
-    user_input = st.chat_input("Ask an executive question about sales or design trends…")
+    st.session_state.auto_question = None  # clear the queue
+
 
 if user_input:
     st.session_state.chat_history.append({"role": "user", "content": user_input})
