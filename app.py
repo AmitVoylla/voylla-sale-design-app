@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 # coding: utf-8
-
 import streamlit as st
 from langchain_openai import ChatOpenAI
 from langchain_community.utilities.sql_database import SQLDatabase
@@ -18,7 +17,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import time
-import uuid
 
 # ---------- Enhanced spinner messages -----------
 TEMPLATES_FILE = "voylla_about_templates_attractive.txt"
@@ -47,6 +45,7 @@ os.environ["OPENAI_API_KEY"] = api_key
 @st.cache_resource
 def get_llm():
     return ChatOpenAI(model="gpt-4.1-mini", temperature=0.1, request_timeout=60, max_retries=3)
+
 llm = get_llm()
 
 # ---------- Enhanced DB CONNECTION with caching and retries ----------
@@ -72,6 +71,7 @@ def get_database_connection():
             # Test connection
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
+
             db = SQLDatabase(
                 engine,
                 include_tables=["voylla_design_ai"],
@@ -201,19 +201,6 @@ def df_to_excel_bytes(df: pd.DataFrame, sheet_name: str = "Executive_Report"):
         pd.DataFrame(summary_data).to_excel(writer, index=False, sheet_name='Summary')
     return output.getvalue()
 
-def show_table_with_excel_download(df: pd.DataFrame, title: str = "Results"):
-    """Render dataframe and always show a working Excel download button below."""
-    st.dataframe(df, use_container_width=True)
-    excel_bytes = df_to_excel_bytes(df, sheet_name=title[:31] or "Results")
-    st.download_button(
-        "💾 Download as Excel",
-        data=excel_bytes,
-        file_name=f"{title.lower().replace(' ','_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key=f"dl_{uuid.uuid4()}",  # guaranteed-unique
-        use_container_width=True
-    )
-
 # ---------- Page ----------
 st.set_page_config(
     page_title="Voylla DesignGPT - Executive Dashboard",
@@ -223,18 +210,7 @@ st.set_page_config(
 )
 
 # Always-on styling (Executive look, no toggle)
-st.markdown("""
-<style>
-.stApp { background-color: #f8f9fa; color: #212529; }
-.main-header { font-size: 2.5rem; color: #4a4a4a; font-weight: 700; margin-bottom: 0.5rem; }
-.stChatMessage .element-container div[data-testid="stMarkdownContainer"] { color: #212529 !important; font-size: 1rem; }
-.metric-card { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 1.2rem; border-radius: 12px; color: white; text-align: center; margin: 0.5rem 0; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-.executive-summary { background-color: white; border-radius: 12px; padding: 1.5rem; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 1.5rem; border-left: 4px solid #764ba2; }
-.success-indicator { color: #28a745; font-weight: bold; }
-.warning-indicator { color: #ffc107; font-weight: bold; }
-.assistant-message { background-color: #f8f9fa; border-radius: 12px; padding: 1rem; border-left: 4px solid #667eea; }
-</style>
-""", unsafe_allow_html=True)
+st.markdown("""""", unsafe_allow_html=True)
 
 # ---------- Initialize session state ----------
 for key in ["chat_history", "last_df", "last_query_result", "auto_question"]:
@@ -248,6 +224,7 @@ if "memory" not in st.session_state:
         return_messages=True,
         k=10
     )
+
 if "agent_executor" not in st.session_state:
     toolkit = SQLDatabaseToolkit(db=db, llm=llm)
     st.session_state.agent_executor = create_sql_agent(
@@ -262,10 +239,10 @@ if "agent_executor" not in st.session_state:
 
 # ---------- Sidebar ----------
 with st.sidebar:
-    st.markdown("<div class='metric-card'>📊 Executive Dashboard</div>", unsafe_allow_html=True)
+    st.markdown("<h3>📊 Executive Dashboard</h3>", unsafe_allow_html=True)
     try:
         with st.spinner("Checking database connection..."):
-            result = db.run('SELECT COUNT(*) as total_records FROM voylla."voylla_design_ai" WHERE "Sale Order Item Status" != \'CANCELLED\'')
+            result = db.run("SELECT COUNT(*) as total_records FROM voylla.\"voylla_design_ai\" WHERE \"Sale Order Item Status\" != 'CANCELLED'")
             if result:
                 record_count = re.search(r'\d+', result)
                 if record_count:
@@ -286,6 +263,7 @@ with st.sidebar:
         for q in executive_questions:
             if st.button(f"• {q}", key=f"exec_{hash(q)}"):
                 st.session_state.auto_question = q
+
     with st.expander("🎨 Design Intelligence"):
         design_questions = [
             "Which metal colors are trending this season?",
@@ -296,6 +274,7 @@ with st.sidebar:
         for q in design_questions:
             if st.button(f"• {q}", key=f"design_{hash(q)}"):
                 st.session_state.auto_question = q
+
     with st.expander("📊 Channel Analysis"):
         channel_questions = [
             "Compare AOV across all channels",
@@ -313,17 +292,18 @@ with st.sidebar:
             st.session_state.chat_history = []
             st.session_state.memory.clear()
             st.rerun()
+
     st.markdown("---")
     st.caption("Voylla DesignGPT v2.0 • Executive Edition")
 
 # ---------- Header ----------
-st.markdown("<div class='main-header'>Voylla DesignGPT Executive Dashboard</div>", unsafe_allow_html=True)
+st.markdown("<h2>Voylla DesignGPT Executive Dashboard</h2>", unsafe_allow_html=True)
 st.caption("AI-Powered Design Intelligence and Sales Analytics for Executive Decision Making")
 
 # Always show executive summary on first load
 if not st.session_state.chat_history:
     st.markdown("""
-    <div class='executive-summary'>
+    <div style="border:1px solid #e8e8e8;border-radius:10px;padding:16px">
       <h3>📋 Executive Summary</h3>
       <p>Welcome to Voylla's Executive Analytics Dashboard. This AI-powered tool provides:</p>
       <ul>
@@ -336,13 +316,13 @@ if not st.session_state.chat_history:
     </div>
     """, unsafe_allow_html=True)
 
-# Quick stats cards
+# Quick stats cards (labels)
 try:
     col1, col2, col3, col4 = st.columns(4)
-    with col1: st.markdown('<div class="metric-card">📊 Real-time Analytics</div>', unsafe_allow_html=True)
-    with col2: st.markdown('<div class="metric-card">🎨 Design Intelligence</div>', unsafe_allow_html=True)
-    with col3: st.markdown('<div class="metric-card">💎 Sales Insights</div>', unsafe_allow_html=True)
-    with col4: st.markdown('<div class="metric-card">🚀 Growth Opportunities</div>', unsafe_allow_html=True)
+    with col1: st.markdown('<div><b>📊 Real-time Analytics</b></div>', unsafe_allow_html=True)
+    with col2: st.markdown('<div><b>🎨 Design Intelligence</b></div>', unsafe_allow_html=True)
+    with col3: st.markdown('<div><b>💎 Sales Insights</b></div>', unsafe_allow_html=True)
+    with col4: st.markdown('<div><b>🚀 Growth Opportunities</b></div>', unsafe_allow_html=True)
 except:
     pass
 
@@ -350,7 +330,7 @@ except:
 for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
         if message["role"] == "assistant":
-            st.markdown(f"<div class='assistant-message'>{message['content']}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div>{message['content']}</div>", unsafe_allow_html=True)
         else:
             st.markdown(message["content"])
 
@@ -399,13 +379,13 @@ You are Voylla DesignGPT Executive Edition, an expert SQL/analytics assistant fo
 
 ## KEY COLUMNS FOR EXECUTIVE ANALYSIS
 ### Business Metrics
-- "Date" (timestamp)
-- "Channel" (text)
-- "Sale Order Item Status" (text) — FILTER: WHERE "Sale Order Item Status" != 'CANCELLED'
-- "Qty" (integer)
-- "Amount" (numeric)
-- "MRP" (numeric)
-- "Cost Price" (numeric)
+- "Date" (timestamp) — Transaction date
+- "Channel" (text) — Sales platform (Cloudtail, FLIPKART, MYNTRA, NYKAA, etc.)
+- "Sale Order Item Status" (text) — Filter with: WHERE "Sale Order Item Status" != 'CANCELLED'
+- "Qty" (integer) — Units sold
+- "Amount" (numeric) — Revenue (Qty × price)
+- "MRP" (numeric) — Maximum Retail Price
+- "Cost Price" (numeric) — Unit cost
 
 ### Design Intelligence
 - "Design Style" (text)
@@ -415,28 +395,27 @@ You are Voylla DesignGPT Executive Edition, an expert SQL/analytics assistant fo
 - "Central Stone" (text)
 
 # MANDATORY FILTERS
-- Exclude cancelled orders.
-- Use appropriate time ranges.
-- Compare channels on common periods.
+- Always exclude cancelled orders: WHERE "Sale Order Item Status" != 'CANCELLED'
+- For time-based questions, use appropriate date ranges
+- When comparing channels, include only common time periods
 
 # EXECUTIVE METRICS
 - Revenue: SUM("Amount")
 - Units: SUM("Qty")
-- AOV: SUM("Amount") / NULLIF(SUM("Qty"), 0)
+- Average Order Value: SUM("Amount") / NULLIF(SUM("Qty"), 0)
 - Profit Margin: (SUM("Amount") - SUM("Cost Price" * "Qty")) / NULLIF(SUM("Amount"), 0) * 100
-- Growth: LAG() for period-over-period
+- Growth Rate: Use LAG() for period-over-period comparisons
 
-# RESPONSE FORMAT
-1) Executive summary
-2) Clean markdown table
-3) Bold key insights
-4) Add charts when appropriate
-5) Close with recommendations
+# RESPONSE FORMATTING
+1) Start with a concise executive summary
+2) Present data in clean markdown tables
+3) Bold the most important insights
+4) Include charts when appropriate
+5) End with actionable recommendations
 
 # CURRENT EXECUTIVE REQUEST
 {user_input}
 """
-
     random_template = random.choice(lines)
     with st.spinner(random_template.strip()):
         try:
@@ -456,9 +435,9 @@ You are Voylla DesignGPT Executive Edition, an expert SQL/analytics assistant fo
 
     st.session_state.chat_history.append({"role": "assistant", "content": response})
     with st.chat_message("assistant"):
-        st.markdown(f"<div class='assistant-message'>{response}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div>{response}</div>", unsafe_allow_html=True)
 
-    # ---------- Parse table & show chart + INLINE DOWNLOAD (no expander) ----------
+    # ---------- Parse table & show chart + ALWAYS-VISIBLE DOWNLOAD ----------
     df_res = markdown_to_dataframe(response)
     if df_res is not None and not df_res.empty:
         st.session_state.last_df = df_res
@@ -468,11 +447,38 @@ You are Voylla DesignGPT Executive Edition, an expert SQL/analytics assistant fo
         if chart:
             st.plotly_chart(chart, use_container_width=True)
 
-        st.subheader("📋 Results")
-        # Always-visible table + working download button
-        show_table_with_excel_download(df_res, title="Executive_Report")
+        # NEW: Always-visible quick download section
+        st.markdown("### 📥 Quick Download")
+        excel_bytes = df_to_excel_bytes(df_res)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        st.download_button(
+            "💾 Download Excel",
+            data=excel_bytes,
+            file_name=f"voylla_table_{timestamp}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key=f"quick_dl_{timestamp}"
+        )
 
-# ---------- Global export block (optional; keep/remove as you like) ----------
+        # Keep the detailed expander (opened by default)
+        with st.expander("View Data Table & Download", expanded=True):
+            st.dataframe(df_res, use_container_width=True)
+            excel_bytes2 = df_to_excel_bytes(df_res)
+            timestamp2 = datetime.now().strftime("%Y%m%d_%H%M%S")
+            st.download_button(
+                "💾 Download this table as Excel",
+                data=excel_bytes2,
+                file_name=f"voylla_table_{timestamp2}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key=f"inline_dl_{timestamp2}"
+            )
+
+# ---------- Global export block ----------
+# NEW: Hint when no table is available yet
+if st.session_state.last_df is None or (isinstance(st.session_state.last_df, pd.DataFrame) and st.session_state.last_df.empty):
+    st.info("Run a question that returns a table (e.g., click a sidebar sample like 'Show me top 10 products by revenue this quarter'). The download buttons appear once data is available.")
+
 if st.session_state.last_df is not None and not st.session_state.last_df.empty:
     st.markdown("---")
     st.subheader("📥 Export Results")
@@ -497,9 +503,9 @@ if st.session_state.last_df is not None and not st.session_state.last_df.empty:
 # ---------- Footer ----------
 st.markdown("---")
 st.markdown("""
-<div style='text-align: center; color: #666; font-size: 0.9em;'>
-💡 <b>Tips:</b> Ask about trends, comparisons, performance metrics, and growth opportunities •
+<small>
+💡 Tips: Ask about trends, comparisons, performance metrics, and growth opportunities •
 Use terms like "YoY", "QoQ", "market share", "trending", "best performing" •
 Request visualizations with "show me a chart of..."
-</div>
+</small>
 """, unsafe_allow_html=True)
