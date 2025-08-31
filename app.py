@@ -6,7 +6,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from sqlalchemy import create_engine, text
-import openai
+from openai import OpenAI
 from datetime import datetime, timedelta
 import re
 import json
@@ -208,10 +208,10 @@ def initialize_database():
             test_result = conn.execute(text("SELECT COUNT(*) FROM voylla.\"voylla_design_ai\"")).fetchone()
             record_count = test_result[0] if test_result else 0
         
-        # Initialize OpenAI
-        openai.api_key = st.secrets["OPENAI_API_KEY"]
+        # Initialize OpenAI client
+        openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
         
-        return engine, record_count
+        return engine, record_count, openai_client
         
     except Exception as e:
         st.error(f"❌ Initialization failed: {str(e)}")
@@ -219,8 +219,9 @@ def initialize_database():
 
 # ---------- DIRECT SQL EXECUTION (NO LANGCHAIN) ----------
 class VoyllaAnalytics:
-    def __init__(self, engine):
+    def __init__(self, engine, openai_client):
         self.engine = engine
+        self.openai_client = openai_client
         self.table_schema = self.get_table_schema()
     
     def get_table_schema(self):
@@ -241,9 +242,116 @@ class VoyllaAnalytics:
             logger.error(f"Schema fetch error: {e}")
             return {}
     
+    def generate_sql_simple(self, user_query: str) -> str:
+        """Generate SQL using pattern matching for reliability"""
+        query_lower = user_query.lower()
+        
+        # Revenue patterns
+        if any(word in query_lower for word in ['revenue', 'sales', 'money', 'earning']):
+            if 'channel' in query_lower:
+                return """
+                SELECT 
+                    "Channel",
+                    SUM("Qty") as "Units Sold",
+                    ROUND(SUM("Amount")::numeric, 0) as "Revenue (₹)",
+                    ROUND(AVG("Amount")::numeric, 2) as "AOV (₹)"
+                FROM voylla."voylla_design_ai"
+                WHERE "Sale Order Item Status" <> 'CANCELLED'
+                    AND "Date" >= CURRENT_DATE - INTERVAL '90 days'
+                GROUP BY "Channel"
+                ORDER BY "Revenue (₹)" DESC;
+                """
+            else:
+                return """
+                SELECT 
+                    "Design Style",
+                    "Form",
+                    SUM("Qty") as "Units Sold",
+                    ROUND(SUM("Amount")::numeric, 0) as "Revenue (₹)"
+                FROM voylla."voylla_design_ai"
+                WHERE "Sale Order Item Status" <> 'CANCELLED'
+                GROUP BY "Design Style", "Form"
+                ORDER BY "Revenue (₹)" DESC
+                LIMIT 20;
+                """
+        
+        # Top performers
+        elif any(word in query_lower for word in ['top', 'best', 'highest', 'performing']):
+            return """
+            SELECT 
+                "Design Style",
+                "Metal Color",
+                "Form",
+                SUM("Qty") as "Units Sold",
+                ROUND(SUM("Amount")::numeric, 0) as "Revenue (₹)",
+                COUNT(DISTINCT "Channel") as "Channels"
+            FROM voylla."voylla_design_ai"
+            WHERE "Sale Order Item Status" <> 'CANCELLED'
+            GROUP BY "Design Style", "Metal Color", "Form"
+            HAVING SUM("Qty") >= 5
+            ORDER BY "Revenue (₹)" DESC
+            LIMIT 25;
+            """
+        
+        # Trend analysis
+        elif any(word in query_lower for word in ['trend', 'month', 'time', 'period']):
+            return """
+            SELECT 
+                TO_CHAR("Date", 'YYYY-MM') as "Month",
+                "Design Style",
+                SUM("Qty") as "Units",
+                ROUND(SUM("Amount")::numeric, 0) as "Revenue (₹)"
+            FROM voylla."voylla_design_ai"
+            WHERE "Sale Order Item Status" <> 'CANCELLED'
+                AND "Date" >= CURRENT_DATE - INTERVAL '12 months'
+            GROUP BY TO_CHAR("Date", 'YYYY-MM'), "Design Style"
+            ORDER BY "Month" DESC, "Revenue (₹)" DESC;
+            """
+        
+        # Channel analysis
+        elif 'channel' in query_lower:
+            return """
+            SELECT 
+                "Channel",
+                "Design Style", 
+                SUM("Qty") as "Units",
+                ROUND(SUM("Amount")::numeric, 0) as "Revenue (₹)",
+                COUNT(DISTINCT "Product Code") as "SKUs"
+            FROM voylla."voylla_design_ai"
+            WHERE "Sale Order Item Status" <> 'CANCELLED'
+                AND "Date" >= CURRENT_DATE - INTERVAL '60 days'
+            GROUP BY "Channel", "Design Style"
+            ORDER BY "Revenue (₹)" DESC
+            LIMIT 30;
+            """
+        
+        # Default comprehensive query
+        else:
+            return """
+            SELECT 
+                "Design Style",
+                "Form",
+                "Metal Color",
+                SUM("Qty") as "Total Units",
+                ROUND(SUM("Amount")::numeric, 0) as "Revenue (₹)",
+                ROUND(AVG("Amount" / NULLIF("Qty", 0))::numeric, 0) as "Avg Price (₹)"
+            FROM voylla."voylla_design_ai"
+            WHERE "Sale Order Item Status" <> 'CANCELLED'
+                AND "Date" >= CURRENT_DATE - INTERVAL '90 days'
+            GROUP BY "Design Style", "Form", "Metal Color"
+            ORDER BY "Revenue (₹)" DESC
+            LIMIT 20;
+            """
     def generate_sql(self, user_query: str, context: str = "") -> str:
         """Generate SQL using OpenAI with enhanced prompting"""
         
+        # Try simple pattern matching first for reliability
+        try:
+            return self.generate_sql_simple(user_query)
+        except:
+            pass
+        
+        # Fallback to OpenAI if pattern matching fails
         schema_context = "\n".join([f'"{col}": {info["type"]}' for col, info in self.table_schema.items()])
         
         system_prompt = f"""You are an expert PostgreSQL analyst for Voylla jewelry business data.
@@ -280,8 +388,8 @@ Query: {user_query}
 Return only the SQL query, no markdown formatting or explanations."""
 
         try:
-            response = openai.ChatCompletion.create(
-                model="gpt-4-turbo-preview",
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4-1106-preview",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
@@ -314,30 +422,73 @@ Return only the SQL query, no markdown formatting or explanations."""
             logger.error(f"SQL execution error: {error_msg}")
             return None, error_msg
     
-    def generate_insights(self, df: pd.DataFrame, user_query: str) -> str:
-        """Generate business insights using OpenAI"""
+    def generate_insights_simple(self, df: pd.DataFrame, user_query: str) -> str:
+        """Generate simple insights without OpenAI for reliability"""
         if df is None or df.empty:
             return ""
         
-        # Prepare data summary for AI
-        data_summary = {
-            "rows": len(df),
-            "columns": df.columns.tolist(),
-            "sample_data": df.head(3).to_dict('records'),
-            "summary_stats": {}
-        }
+        insights = []
         
-        # Add summary statistics for numeric columns
+        # Analyze numeric columns
         numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns
-        for col in numeric_cols:
-            data_summary["summary_stats"][col] = {
-                "total": float(df[col].sum()),
-                "avg": float(df[col].mean()),
-                "max": float(df[col].max()),
-                "min": float(df[col].min())
-            }
         
-        prompt = f"""
+        for col in numeric_cols:
+            if 'revenue' in col.lower() or '₹' in col:
+                total = df[col].sum()
+                insights.append(f"💰 **Total {col}**: ₹{total:,.0f}")
+                
+                if len(df) > 1:
+                    top_performer = df.loc[df[col].idxmax()]
+                    insights.append(f"🏆 **Top Revenue Generator**: {top_performer.iloc[0]} with ₹{top_performer[col]:,.0f}")
+            
+            elif 'units' in col.lower() or 'qty' in col.lower():
+                total_units = df[col].sum()
+                insights.append(f"📦 **Total Units Sold**: {total_units:,}")
+        
+        # Performance distribution
+        if len(df) > 3:
+            top_20_pct = int(len(df) * 0.2) or 1
+            if numeric_cols.any():
+                main_metric = numeric_cols[0]
+                top_performance = df.head(top_20_pct)[main_metric].sum()
+                total_performance = df[main_metric].sum()
+                concentration = (top_performance / total_performance * 100) if total_performance > 0 else 0
+                insights.append(f"📊 **Performance Concentration**: Top 20% drives {concentration:.0f}% of results")
+        
+        # Channel diversity
+        if 'channel' in df.columns.str.lower().str.join(' '):
+            channel_cols = [col for col in df.columns if 'channel' in col.lower()]
+            if channel_cols:
+                unique_channels = df[channel_cols[0]].nunique()
+                insights.append(f"🌐 **Channel Reach**: {unique_channels} active sales channels")
+        
+        return "\n\n".join(insights) if insights else "Analysis complete - review the data table for detailed insights."
+    def generate_insights(self, df: pd.DataFrame, user_query: str) -> str:
+        """Generate business insights with fallback to simple analysis"""
+        try:
+            # Try OpenAI insights first
+            if df is None or df.empty:
+                return ""
+            
+            # Prepare data summary for AI
+            data_summary = {
+                "rows": len(df),
+                "columns": df.columns.tolist(),
+                "sample_data": df.head(3).to_dict('records'),
+                "summary_stats": {}
+            }
+            
+            # Add summary statistics for numeric columns
+            numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns
+            for col in numeric_cols:
+                data_summary["summary_stats"][col] = {
+                    "total": float(df[col].sum()),
+                    "avg": float(df[col].mean()),
+                    "max": float(df[col].max()),
+                    "min": float(df[col].min())
+                }
+            
+            prompt = f"""
 Analyze this Voylla jewelry business data and provide executive insights:
 
 USER QUERY: {user_query}
@@ -351,18 +502,19 @@ Provide 3-5 bullet points of actionable business insights. Focus on:
 
 Keep insights concise and executive-level."""
 
-        try:
-            response = openai.ChatCompletion.create(
-                model="gpt-4-turbo-preview",
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4-1106-preview",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
                 max_tokens=500
             )
             
             return response.choices[0].message.content.strip()
+            
         except Exception as e:
-            logger.error(f"Insights generation error: {e}")
-            return ""
+            logger.error(f"AI insights failed, using simple analysis: {e}")
+            # Fallback to simple insights
+            return self.generate_insights_simple(df, user_query)
 
 # ---------- ENHANCED VISUALIZATION ----------
 def create_executive_visualization(df, chart_type="auto"):
@@ -565,8 +717,8 @@ EXECUTIVE_QUERIES = {
 }
 
 # ---------- INITIALIZE SYSTEM ----------
-engine, record_count = initialize_database()
-analytics = VoyllaAnalytics(engine)
+engine, record_count, openai_client = initialize_database()
+analytics = VoyllaAnalytics(engine, openai_client)
 
 # Initialize session state
 for key in ["chat_history", "last_df", "current_insights", "auto_question"]:
@@ -728,13 +880,8 @@ if user_input:
         if "predefined_sql" in locals():
             sql_query = predefined_sql
         else:
-            # Build context from recent conversation
-            context = ""
-            if len(st.session_state.chat_history) > 2:
-                recent = st.session_state.chat_history[-4:]
-                context = " | ".join([msg["content"][:100] for msg in recent])
-            
-            sql_query = analytics.generate_sql(user_input, context)
+            # Use simple pattern-based SQL generation for reliability
+            sql_query = analytics.generate_sql_simple(user_query)
         
         if sql_query:
             # Execute SQL
@@ -967,7 +1114,7 @@ with st.sidebar:
         
         # OpenAI API health
         try:
-            test_response = openai.ChatCompletion.create(
+            test_response = openai_client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[{"role": "user", "content": "test"}],
                 max_tokens=5
@@ -1142,7 +1289,11 @@ def verify_system_startup():
     
     # OpenAI check
     try:
-        openai.Model.list()
+        test_response = openai_client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": "test"}],
+            max_tokens=5
+        )
         checks.append("✅ AI model access verified")
     except Exception as e:
         checks.append(f"❌ AI model issue: {str(e)[:50]}")
@@ -1155,7 +1306,7 @@ def verify_system_startup():
     
     return checks
 
-# Run startup verification (only show if there are issues)
+# Run startup verification and pass openai_client
 startup_checks = verify_system_startup()
 if any("❌" in check for check in startup_checks):
     with st.sidebar:
