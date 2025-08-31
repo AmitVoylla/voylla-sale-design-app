@@ -527,10 +527,10 @@ if 'last_df' in st.session_state and st.session_state.last_df is not None and no
     )
 else:
     st.info("No data available for export. Run a query first to generate data.")
+
+
+
 st.markdown("""
-
-
-
 💡 Tips: Ask about trends, comparisons, performance metrics, and growth opportunities •
 Use terms like "YoY", "QoQ", "market share", "trending", "best performing" •
 Request visualizations with "show me a chart of..."
