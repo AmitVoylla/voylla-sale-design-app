@@ -45,7 +45,7 @@ os.environ["OPENAI_API_KEY"] = api_key
 # ---------- LLM with error recovery ----------
 @st.cache_resource
 def get_llm():
-    return ChatOpenAI(model="gpt-4o-mini", temperature=0.1, request_timeout=60, max_retries=3)
+    return ChatOpenAI(model="gpt-4.1-mini", temperature=0.1, request_timeout=60, max_retries=3)
 llm = get_llm()
 
 # ---------- Enhanced DB CONNECTION with caching and retries ----------
@@ -242,7 +242,7 @@ if "agent_executor" not in st.session_state:
         verbose=True,
         handle_parsing_errors=True,
         memory=st.session_state.memory,
-        max_iterations=15,
+        max_iterations=16,
         agent_executor_kwargs={"handle_parsing_errors": True}
     )
 
