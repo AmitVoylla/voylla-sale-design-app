@@ -18,6 +18,33 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import time
+from io import BytesIO
+
+def show_table_with_excel_download(df: pd.DataFrame, title: str = "View Data Table", filename_prefix: str = "voylla_table"):
+    """Render a dataframe and a download-as-Excel button together."""
+    if df is None or df.empty:
+        return
+
+    with st.expander(title, expanded=False):
+        st.dataframe(df, use_container_width=True)
+
+        # Build Excel in-memory
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Data")
+        output.seek(0)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+        st.download_button(
+            label="💾 Download as Excel",
+            data=output.getvalue(),
+            file_name=f"{filename_prefix}_{timestamp}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key=f"dl_{filename_prefix}_{timestamp}"
+        )
+
+
 
 # ---------- Enhanced spinner messages -----------
 TEMPLATES_FILE = "voylla_about_templates_attractive.txt"
