@@ -468,16 +468,13 @@ You are Voylla DesignGPT Executive Edition, an expert SQL/analytics assistant fo
             )
 
 # ---------- Global export block (optional; kept for convenience) ----------
-# ---------- Global export block (always visible when there's data) ----------
-if 'last_df' in st.session_state and st.session_state.last_df is not None and not st.session_state.last_df.empty:
+if st.session_state.last_df is not None and not st.session_state.last_df.empty:
     st.markdown("---")
     st.subheader("📥 Export Results")
     col1, col2, col3 = st.columns([1, 1, 2])
     with col1:
         rows_choice = st.selectbox("Rows to export:", [100, 500, 1000, "All"], index=1)
-        export_df = st.session_state.last_df.copy()
-        if rows_choice != "All":
-            export_df = export_df.head(int(rows_choice))
+        export_df = st.session_state.last_df.copy() if rows_choice == "All" else st.session_state.last_df.iloc[:int(rows_choice)].copy()
     with col2:
         st.caption(f"📋 {len(export_df)} rows × {len(export_df.columns)} columns")
     with col3:
@@ -494,25 +491,10 @@ if 'last_df' in st.session_state and st.session_state.last_df is not None and no
 
 # ---------- Footer ----------
 st.markdown("---")
-st.subheader("📥 Data Export")
-
-if 'last_df' in st.session_state and st.session_state.last_df is not None and not st.session_state.last_df.empty:
-    excel_bytes = df_to_excel_bytes(st.session_state.last_df)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    st.download_button(
-        "💾 Download Current Data as Excel",
-        data=excel_bytes,
-        file_name=f"voylla_data_export_{timestamp}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-        key="persistent_download"
-    )
-else:
-    st.info("No data available for export. Run a query first to generate data.")
-
 st.markdown("""
-💡 Tips: 
-- Ask about trends, comparisons, performance metrics, and growth opportunities
-- Use terms like "YoY", "QoQ", "market share", "trending", "best performing"
-- Request visualizations with "show me a chart of..."
+<div style='text-align: center; color: #666; font-size: 0.9em;'>
+💡 <b>Tips:</b> Ask about trends, comparisons, performance metrics, and growth opportunities •
+Use terms like "YoY", "QoQ", "market share", "trending", "best performing" •
+Request visualizations with "show me a chart of..."
+</div>
 """, unsafe_allow_html=True)
