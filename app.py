@@ -337,7 +337,7 @@ if "agent_executor" not in st.session_state:
         handle_parsing_errors=True,
         memory=st.session_state.memory,
         max_iterations=15,
-        early_stopping_method="generate",
+        # early_stopping_method="generate",
         agent_executor_kwargs={"handle_parsing_errors": True}
     )
 
