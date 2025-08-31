@@ -235,21 +235,23 @@ if "memory" not in st.session_state:
         k=10
     )
 # ---------- Agent (stable + recoverable) ----------
+# ---------- Agent (stable + recoverable) ----------
 if "agent_executor" not in st.session_state:
     toolkit = SQLDatabaseToolkit(db=db, llm=llm)
     st.session_state.agent_executor = create_sql_agent(
         llm=llm,
         toolkit=toolkit,
         verbose=False,
+        max_iterations=25,
+        max_execution_time=40,
+        early_stopping_method="generate",
         handle_parsing_errors=True,
-        max_iterations=25,                 # give some headroom
-        max_execution_time=40,             # hard cap
-        early_stopping_method="generate",  # return best-effort text on stop
         agent_executor_kwargs={
             "handle_parsing_errors": True,
-            "return_intermediate_steps": True   # <-- IMPORTANT
+            "return_intermediate_steps": True  # <-- multiple outputs now
         }
     )
+
 
 # ---------- Sidebar ----------
 with st.sidebar:
