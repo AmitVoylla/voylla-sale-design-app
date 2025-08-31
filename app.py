@@ -45,7 +45,7 @@ os.environ["OPENAI_API_KEY"] = api_key
 # ---------- LLM with error recovery ----------
 @st.cache_resource
 def get_llm():
-    return ChatOpenAI(model="gpt-4.1-mini", temperature=0.1, request_timeout=60, max_retries=3)
+    return ChatOpenAI(model="gpt-4o-mini", temperature=0.1, request_timeout=60, max_retries=3)
 llm = get_llm()
 
 # ---------- Enhanced DB CONNECTION with caching and retries ----------
@@ -276,7 +276,7 @@ with st.sidebar:
         design_questions = [
             "Which metal colors are trending this season?",
             "What are the top 3 success combinations for wedding look?",
-            "How do traditional vs contemporary designs perform?",
+            "How do Traditional/Ethnic vs contemporary designs perform?",
             "Show me the performance of different stone settings"
         ]
         for q in design_questions:
