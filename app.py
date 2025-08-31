@@ -42,13 +42,13 @@ if not api_key:
 
 os.environ["OPENAI_API_KEY"] = api_key
 
-# ---------- FIXED LLM with correct model name ----------
+# ---------- FIXED LLM with error recovery ----------
 @st.cache_resource
 def get_llm():
     return ChatOpenAI(
-        model="gpt-4.1-mini",  # FIXED: Correct model name
+        model="gpt-4o-mini",  # FIXED: Corrected model name
         temperature=0.1, 
-        request_timeout=120,  # INCREASED: More time for complex queries
+        request_timeout=120,  # Increased timeout
         max_retries=3
     )
 
@@ -253,12 +253,12 @@ for key in ["chat_history", "last_df", "last_query_result", "auto_question"]:
     if key not in st.session_state:
         st.session_state[key] = [] if key == "chat_history" else None
 
-# ---------- IMPROVED Memory / Agent with better settings ----------
+# ---------- Memory / Agent ----------
 if "memory" not in st.session_state:
     st.session_state.memory = ConversationBufferWindowMemory(
         memory_key="chat_history",
         return_messages=True,
-        k=5  # REDUCED: Shorter memory window to prevent context overflow
+        k=10
     )
 
 if "agent_executor" not in st.session_state:
@@ -269,12 +269,8 @@ if "agent_executor" not in st.session_state:
         verbose=True,
         handle_parsing_errors=True,
         memory=st.session_state.memory,
-        max_iterations=8,  # REDUCED: Prevent infinite loops
-        early_stopping_method="generate",  # ADDED: Better stopping
-        agent_executor_kwargs={
-            "handle_parsing_errors": True,
-            "return_intermediate_steps": False  # ADDED: Cleaner responses
-        }
+        max_iterations=8,  # REDUCED: From 15 to 8 to prevent timeouts
+        agent_executor_kwargs={"handle_parsing_errors": True}
     )
 
 # ---------- Sidebar ----------
@@ -297,7 +293,7 @@ with st.sidebar:
     with st.expander("📈 Performance Overview", expanded=True):
         executive_questions = [
             "Show me top 10 products by revenue this quarter",
-            "What are our best performing channels by growth rate?", 
+            "What are our best performing channels by growth rate?",
             "Compare this year's revenue to last year by month",
             "What is our profit margin trend over the last 6 months?",
             "Which design styles have the highest average order value?"
@@ -385,16 +381,16 @@ if st.session_state.get("auto_question"):
     user_input = st.session_state.auto_question
     st.session_state.auto_question = None
 
-# ---------- IMPROVED Conversation context builder ----------
+# ---------- Conversation context builder ----------
 def get_conversation_context():
     if not st.session_state.chat_history:
         return ""
     
-    recent_history = st.session_state.chat_history[-3:]  # REDUCED: Shorter context
-    context_parts = ["### Recent Context:"]
+    recent_history = st.session_state.chat_history[-6:]
+    context_parts = ["### Conversation History:"]
     for msg in recent_history:
         role = "Human" if msg["role"] == "user" else "Assistant"
-        content = msg["content"][:200]  # REDUCED: Shorter snippets
+        content = msg["content"][:500]
         context_parts.append(f"{role}: {content}")
     return "\n".join(context_parts)
 
@@ -407,27 +403,66 @@ if user_input:
     
     conversation_context = get_conversation_context()
     
-    # IMPROVED: More focused prompt
     prompt = f"""
-You are Voylla DesignGPT Executive Edition. Provide concise, actionable business insights.
+You are Voylla DesignGPT Executive Edition, an expert SQL/analytics assistant for Voylla jewelry data analysis designed for executive use.
 
+# CONVERSATION CONTEXT
 {conversation_context}
 
-DATABASE: voylla."voylla_design_ai" 
-KEY RULE: Always exclude cancelled orders: WHERE "Sale Order Item Status" != 'CANCELLED'
+# EXECUTIVE REPORTING GUIDELINES
+- Focus on business insights, not just data
+- Highlight trends, opportunities, and risks
+- Compare performance metrics (YoY, MoM, QoQ)
+- Use clear, concise language appropriate for executives
+- Provide actionable recommendations when possible
 
-IMPORTANT COLUMNS:
-- "Date", "Channel", "Qty", "Amount", "Cost Price", "MRP"
-- "Design Style", "Metal Color", "Look", "Central Stone"
+# DATABASE SCHEMA: voylla."voylla_design_ai"
 
-RESPONSE FORMAT:
-1. Brief executive summary (2-3 lines)
-2. Data table (markdown format)
-3. Key insight (1-2 bullets)
+## KEY COLUMNS FOR EXECUTIVE ANALYSIS
 
-QUESTION: {user_input}
+### Business Metrics
+- "Date" (timestamp) — Transaction date
+- "Channel" (text) — Sales platform (Cloudtail, FLIPKART, MYNTRA, NYKAA, etc.)
+- "Sale Order Item Status" (text) — Filter with: WHERE "Sale Order Item Status" != 'CANCELLED'
+- "Qty" (integer) — Units sold
+- "Amount" (numeric) — Revenue (Qty × price)
+- "MRP" (numeric) — Maximum Retail Price
+- "Cost Price" (numeric) — Unit cost
 
-Keep SQL queries simple and focused. Limit results to top 10-15 rows.
+### Design Intelligence
+- "Design Style" (text)
+- "Form" (text)
+- "Metal Color" (text)
+- "Look" (text)
+- "Central Stone" (text)
+
+# MANDATORY FILTERS
+- Always exclude cancelled orders: WHERE "Sale Order Item Status" != 'CANCELLED'
+- For time-based questions, use appropriate date ranges
+- When comparing channels, include only common time periods
+
+# EXECUTIVE METRICS
+- Revenue: SUM("Amount")
+- Units: SUM("Qty")
+- Average Order Value: SUM("Amount") / NULLIF(SUM("Qty"), 0)
+- Profit Margin: (SUM("Amount") - SUM("Cost Price" * "Qty")) / NULLIF(SUM("Amount"), 0) * 100
+- Growth Rate: Use LAG() for period-over-period comparisons
+
+# RESPONSE FORMATTING
+1) Start with a concise executive summary
+2) Present data in clean markdown tables
+3) Bold the most important insights
+4) Include charts when appropriate
+5) End with actionable recommendations
+
+# QUERY OPTIMIZATION GUIDELINES
+- Always use LIMIT clause for large datasets (LIMIT 20 for most queries)
+- Use appropriate date filters to narrow results
+- Group by major categories only
+- Keep queries focused and specific
+
+# CURRENT EXECUTIVE REQUEST
+{user_input}
 """
     
     random_template = random.choice(lines)
@@ -444,8 +479,12 @@ Keep SQL queries simple and focused. Limit results to top 10-15 rows.
                 response = "🔌 Database connection issue. Please try again in a moment."
             elif "parsing" in error_msg.lower() or "iteration" in error_msg.lower():
                 response = "I had trouble processing that complex request. Could you please try a simpler, more specific question?"
+                st.warning("⚠️ Query was too complex. Try asking for:")
+                st.write("• Specific date ranges (last 30 days, this quarter)")
+                st.write("• Top 10 results instead of all data")
+                st.write("• One metric at a time")
             else:
-                response = f"I encountered an error. Please try a simpler question. Error: {error_msg[:100]}..."
+                response = f"I encountered an error. Please try again or rephrase your question. Error: {error_msg[:100]}..."
     
     st.session_state.chat_history.append({"role": "assistant", "content": response})
     
@@ -476,7 +515,7 @@ Keep SQL queries simple and focused. Limit results to top 10-15 rows.
                 key=f"inline_dl_{timestamp}"
             )
 
-# ---------- Global export block ----------
+# ---------- Global export block (optional; kept for convenience) ----------
 if st.session_state.last_df is not None and not st.session_state.last_df.empty:
     st.markdown("---")
     st.subheader("📥 Export Results")
