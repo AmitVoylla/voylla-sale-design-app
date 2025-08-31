@@ -18,6 +18,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import time
+import uuid
 
 # ---------- Enhanced spinner messages -----------
 TEMPLATES_FILE = "voylla_about_templates_attractive.txt"
@@ -200,6 +201,19 @@ def df_to_excel_bytes(df: pd.DataFrame, sheet_name: str = "Executive_Report"):
         pd.DataFrame(summary_data).to_excel(writer, index=False, sheet_name='Summary')
     return output.getvalue()
 
+def show_table_with_excel_download(df: pd.DataFrame, title: str = "Results"):
+    """Render dataframe and always show a working Excel download button below."""
+    st.dataframe(df, use_container_width=True)
+    excel_bytes = df_to_excel_bytes(df, sheet_name=title[:31] or "Results")
+    st.download_button(
+        "💾 Download as Excel",
+        data=excel_bytes,
+        file_name=f"{title.lower().replace(' ','_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key=f"dl_{uuid.uuid4()}",  # guaranteed-unique
+        use_container_width=True
+    )
+
 # ---------- Page ----------
 st.set_page_config(
     page_title="Voylla DesignGPT - Executive Dashboard",
@@ -251,7 +265,7 @@ with st.sidebar:
     st.markdown("<div class='metric-card'>📊 Executive Dashboard</div>", unsafe_allow_html=True)
     try:
         with st.spinner("Checking database connection..."):
-            result = db.run("SELECT COUNT(*) as total_records FROM voylla.\"voylla_design_ai\" WHERE \"Sale Order Item Status\" != 'CANCELLED'")
+            result = db.run('SELECT COUNT(*) as total_records FROM voylla."voylla_design_ai" WHERE "Sale Order Item Status" != \'CANCELLED\'')
             if result:
                 record_count = re.search(r'\d+', result)
                 if record_count:
@@ -385,13 +399,13 @@ You are Voylla DesignGPT Executive Edition, an expert SQL/analytics assistant fo
 
 ## KEY COLUMNS FOR EXECUTIVE ANALYSIS
 ### Business Metrics
-- "Date" (timestamp) — Transaction date
-- "Channel" (text) — Sales platform (Cloudtail, FLIPKART, MYNTRA, NYKAA, etc.)
-- "Sale Order Item Status" (text) — Filter with: WHERE "Sale Order Item Status" != 'CANCELLED'
-- "Qty" (integer) — Units sold
-- "Amount" (numeric) — Revenue (Qty × price)
-- "MRP" (numeric) — Maximum Retail Price
-- "Cost Price" (numeric) — Unit cost
+- "Date" (timestamp)
+- "Channel" (text)
+- "Sale Order Item Status" (text) — FILTER: WHERE "Sale Order Item Status" != 'CANCELLED'
+- "Qty" (integer)
+- "Amount" (numeric)
+- "MRP" (numeric)
+- "Cost Price" (numeric)
 
 ### Design Intelligence
 - "Design Style" (text)
@@ -401,23 +415,23 @@ You are Voylla DesignGPT Executive Edition, an expert SQL/analytics assistant fo
 - "Central Stone" (text)
 
 # MANDATORY FILTERS
-- Always exclude cancelled orders: WHERE "Sale Order Item Status" != 'CANCELLED'
-- For time-based questions, use appropriate date ranges
-- When comparing channels, include only common time periods
+- Exclude cancelled orders.
+- Use appropriate time ranges.
+- Compare channels on common periods.
 
 # EXECUTIVE METRICS
 - Revenue: SUM("Amount")
 - Units: SUM("Qty")
-- Average Order Value: SUM("Amount") / NULLIF(SUM("Qty"), 0)
+- AOV: SUM("Amount") / NULLIF(SUM("Qty"), 0)
 - Profit Margin: (SUM("Amount") - SUM("Cost Price" * "Qty")) / NULLIF(SUM("Amount"), 0) * 100
-- Growth Rate: Use LAG() for period-over-period comparisons
+- Growth: LAG() for period-over-period
 
-# RESPONSE FORMATTING
-1) Start with a concise executive summary
-2) Present data in clean markdown tables
-3) Bold the most important insights
-4) Include charts when appropriate
-5) End with actionable recommendations
+# RESPONSE FORMAT
+1) Executive summary
+2) Clean markdown table
+3) Bold key insights
+4) Add charts when appropriate
+5) Close with recommendations
 
 # CURRENT EXECUTIVE REQUEST
 {user_input}
@@ -444,7 +458,7 @@ You are Voylla DesignGPT Executive Edition, an expert SQL/analytics assistant fo
     with st.chat_message("assistant"):
         st.markdown(f"<div class='assistant-message'>{response}</div>", unsafe_allow_html=True)
 
-    # ---------- Parse table & show chart + INLINE DOWNLOAD ----------
+    # ---------- Parse table & show chart + INLINE DOWNLOAD (no expander) ----------
     df_res = markdown_to_dataframe(response)
     if df_res is not None and not df_res.empty:
         st.session_state.last_df = df_res
@@ -454,20 +468,11 @@ You are Voylla DesignGPT Executive Edition, an expert SQL/analytics assistant fo
         if chart:
             st.plotly_chart(chart, use_container_width=True)
 
-        with st.expander("View Data Table & Download"):
-            st.dataframe(df_res, use_container_width=True)
-            excel_bytes = df_to_excel_bytes(df_res)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            st.download_button(
-                "💾 Download this table as Excel",
-                data=excel_bytes,
-                file_name=f"voylla_table_{timestamp}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key=f"inline_dl_{timestamp}"
-            )
+        st.subheader("📋 Results")
+        # Always-visible table + working download button
+        show_table_with_excel_download(df_res, title="Executive_Report")
 
-# ---------- Global export block (optional; kept for convenience) ----------
+# ---------- Global export block (optional; keep/remove as you like) ----------
 if st.session_state.last_df is not None and not st.session_state.last_df.empty:
     st.markdown("---")
     st.subheader("📥 Export Results")
