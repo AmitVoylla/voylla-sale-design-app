@@ -104,9 +104,59 @@ def get_database_connection():
             st.stop()
 
 db = get_database_connection()
+ENGINE = db._engine  # expose for direct SQL fallback
 
-# Expose the engine for direct SQL fallbacks
-ENGINE = db._engine  # (private attr, but stable in practice)
+# ===================== SYSTEM PROMPT (EXECUTIVE RULES) =====================
+
+SYSTEM_PROMPT = """
+You are Voylla DesignGPT Executive Edition, an expert SQL/analytics assistant for Voylla jewelry data analysis designed for executive use.
+
+# EXECUTIVE REPORTING GUIDELINES
+- Focus on business insights, not just only data
+- Always show the numbers, don’t hide them
+- For time-based questions, use appropriate date ranges
+- Highlight trends, opportunities, and risks
+- Compare performance metrics (YoY, MoM, QoQ)
+- Do not make mistakes — executives depend on this data
+- Use clear, concise language appropriate for executives
+- Provide actionable recommendations when possible
+
+# DATABASE SCHEMA: voylla."voylla_design_ai"
+## Business Metrics
+- "Date" (timestamp)
+- "Channel" (text)
+- "Sale Order Item Status" (text) — filter: != 'CANCELLED'
+- "Qty" (integer)
+- "Amount" (numeric)
+- "MRP" (numeric)
+- "Cost Price" (numeric)
+
+## Design Intelligence
+- "Design Style" (text)
+- "Form" (text)
+- "Metal Color" (text)
+- "Look" (text)
+- "Central Stone" (text)
+
+# MANDATORY FILTERS
+- Always exclude cancelled orders: WHERE "Sale Order Item Status" != 'CANCELLED'
+- For time-based questions, use appropriate date ranges
+- When comparing channels, include only common time periods
+
+# EXECUTIVE METRICS
+- Revenue: SUM("Amount")
+- Units: SUM("Qty")
+- Average Order Value: SUM("Amount") / NULLIF(SUM("Qty"), 0)
+- Profit Margin: (SUM("Amount") - SUM("Cost Price" * "Qty")) / NULLIF(SUM("Amount"), 0) * 100
+- Growth Rate: Use LAG() for period-over-period comparisons
+
+# RESPONSE FORMATTING
+1) Start with a concise executive summary
+2) Present data in clean markdown tables
+3) Bold the most important insights
+4) Include charts when appropriate
+5) End with actionable recommendations
+"""
 
 # ===================== HELPERS =====================
 
@@ -189,19 +239,37 @@ if "memory" not in st.session_state:
         memory_key="chat_history", return_messages=True, k=10
     )
 
-# ===================== AGENT (SILENT) =====================
+# ===================== AGENT (SILENT + SYSTEM PROMPT) =====================
+
+def build_agent_with_system(llm, db, system_prompt: str):
+    toolkit = SQLDatabaseToolkit(db=db, llm=llm)
+    # Some LangChain versions use `system_message=`; older ones use `prefix=`.
+    try:
+        return create_sql_agent(
+            llm=llm,
+            toolkit=toolkit,
+            verbose=False,  # hide Thought/Action traces
+            handle_parsing_errors=True,
+            memory=st.session_state.memory,
+            max_iterations=20,
+            agent_executor_kwargs={"handle_parsing_errors": True},
+            system_message=system_prompt
+        )
+    except TypeError:
+        # Fallback for older versions
+        return create_sql_agent(
+            llm=llm,
+            toolkit=toolkit,
+            verbose=False,
+            handle_parsing_errors=True,
+            memory=st.session_state.memory,
+            max_iterations=20,
+            agent_executor_kwargs={"handle_parsing_errors": True},
+            prefix=system_prompt
+        )
 
 if "agent_executor" not in st.session_state:
-    toolkit = SQLDatabaseToolkit(db=db, llm=llm)
-    st.session_state.agent_executor = create_sql_agent(
-        llm=llm,
-        toolkit=toolkit,
-        verbose=False,  # <-- hide ReAct Thought/Action traces
-        handle_parsing_errors=True,
-        memory=st.session_state.memory,
-        max_iterations=20,
-        agent_executor_kwargs={"handle_parsing_errors": True}
-    )
+    st.session_state.agent_executor = build_agent_with_system(llm, db, SYSTEM_PROMPT)
 
 # ===================== SIDEBAR =====================
 
@@ -364,7 +432,7 @@ if user_input:
     if maybe_handle_top_channels_intent(user_input):
         st.stop()
 
-    # Otherwise, use the silent agent
+    # Otherwise, use the silent agent (system prompt embedded)
     with st.spinner(random.choice(lines).strip()):
         try:
             result = st.session_state.agent_executor.invoke({"input": user_input})
