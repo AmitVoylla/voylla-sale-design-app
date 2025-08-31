@@ -45,7 +45,7 @@ os.environ["OPENAI_API_KEY"] = api_key
 # ---------- LLM with error recovery ----------
 @st.cache_resource
 def get_llm():
-    return ChatOpenAI(model="gpt-4.1-mini", temperature=0.1)
+    return ChatOpenAI(model="gpt-3.5-turbo", temperature=0.1)
 
 llm = get_llm()
 
@@ -341,8 +341,7 @@ if "agent_executor" not in st.session_state:
         handle_parsing_errors=True,
         memory=st.session_state.memory,
         max_iterations=10,  # Allow more iterations for complex queries
-        early_stopping_method="generate",
-        handle_parsing_errors=True
+        early_stopping_method="generate"
     )
 
 # ---------- Render chat history ----------
