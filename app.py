@@ -485,8 +485,6 @@ You are Voylla DesignGPT Executive Edition, an expert SQL/analytics assistant fo
                 key=f"inline_dl_{timestamp}"
             )
 # ---------- Global export block (optional; kept for convenience) ----------
-# Replace the entire "Global export block" section with this code:
-
 # ---------- Global export block (always visible when there's data) ----------
 if 'last_df' in st.session_state and st.session_state.last_df is not None and not st.session_state.last_df.empty:
     st.markdown("---")
@@ -510,8 +508,9 @@ if 'last_df' in st.session_state and st.session_state.last_df is not None and no
             use_container_width=True,
             key="executive_download"
         )
+
 # ---------- Footer ----------
-# Add this after the footer section:
+st.markdown("---")
 st.subheader("📥 Data Export")
 
 if 'last_df' in st.session_state and st.session_state.last_df is not None and not st.session_state.last_df.empty:
@@ -528,14 +527,9 @@ if 'last_df' in st.session_state and st.session_state.last_df is not None and no
 else:
     st.info("No data available for export. Run a query first to generate data.")
 
-
-
 st.markdown("""
-💡 Tips: Ask about trends, comparisons, performance metrics, and growth opportunities •
-Use terms like "YoY", "QoQ", "market share", "trending", "best performing" •
-Request visualizations with "show me a chart of..."
-
-
-
+💡 Tips: 
+- Ask about trends, comparisons, performance metrics, and growth opportunities
+- Use terms like "YoY", "QoQ", "market share", "trending", "best performing"
+- Request visualizations with "show me a chart of..."
 """, unsafe_allow_html=True)
-
