@@ -210,7 +210,7 @@ def get_llm():
         st.stop()
     
     return ChatOpenAI(
-        model="gpt-4-turbo-preview",  # More powerful model
+        model="gpt-4.1-mini",  # More powerful model
         temperature=0,  # Deterministic for SQL
         max_tokens=4000,
         request_timeout=60
