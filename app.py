@@ -607,9 +607,17 @@ Remember: You are speaking to company executives. Be insightful, professional, a
             if chart:
                 st.plotly_chart(chart, use_container_width=True)
             
-            # Show data preview
-            with st.expander("View Data Table"):
-                st.dataframe(df_res, use_container_width=True)
+            # # Show data preview
+            # with st.expander("View Data Table"):
+            #     st.dataframe(df_res, use_container_width=True)
+
+            # Table + Excel download in one place
+            show_table_with_excel_download(
+                df_res,
+                title="View Data Table + Excel",
+                filename_prefix="voylla_executive_table"
+            )
+
 
 # ---------- Enhanced download functionality ----------
 if st.session_state.last_df is not None and not st.session_state.last_df.empty:
