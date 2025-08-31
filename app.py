@@ -512,7 +512,6 @@ if 'last_df' in st.session_state and st.session_state.last_df is not None and no
         )
 # ---------- Footer ----------
 # Add this after the footer section:
-st.markdown("---")
 st.subheader("📥 Data Export")
 
 if 'last_df' in st.session_state and st.session_state.last_df is not None and not st.session_state.last_df.empty:
