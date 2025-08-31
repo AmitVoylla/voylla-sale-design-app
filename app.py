@@ -50,7 +50,7 @@ os.environ["OPENAI_API_KEY"] = api_key
 @st.cache_resource(show_spinner=False)
 def get_llm():
     try:
-        return ChatOpenAI(model="gpt-4o-mini", temperature=0.1, request_timeout=30)
+        return ChatOpenAI(model="gpt-4.1-mini", temperature=0.1, request_timeout=30)
     except Exception as e:
         logger.error(f"Failed to initialize LLM: {e}")
         st.error("Failed to connect to language model. Please try again later.")
