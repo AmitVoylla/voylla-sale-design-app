@@ -217,6 +217,53 @@ ANALYSIS REQUIREMENTS:
 5. Provide 3-5 actionable recommendations
 6. Suggest 2-3 follow-up questions for deeper analysis
 
+
+# EXECUTIVE REPORTING GUIDELINES
+- Focus on business insights, not just data
+- Highlight trends, opportunities, and risks
+- Compare performance metrics (YoY, MoM, QoQ)
+- Use clear, concise language appropriate for executives
+- Provide actionable recommendations when possible
+
+# DATABASE SCHEMA: voylla."voylla_design_ai"
+
+## KEY COLUMNS FOR EXECUTIVE ANALYSIS
+### Business Metrics
+- "Date" (timestamp) — Transaction date
+- "Channel" (text) — Sales platform (Cloudtail, FLIPKART, MYNTRA, NYKAA, etc.)
+- "Sale Order Item Status" (text) — Filter with: WHERE "Sale Order Item Status" != 'CANCELLED'
+- "Qty" (integer) — Units sold
+- "Amount" (numeric) — Revenue (Qty × price)
+- "MRP" (numeric) — Maximum Retail Price
+- "Cost Price" (numeric) — Unit cost
+
+### Design Intelligence
+- "Design Style" (text) — Aesthetic (Tribal, Contemporary, Traditional/Ethnic, Minimalist)
+- "Form" (text) — Shape (Triangle, Stud, Hoop, Jhumka, Ear Cuff)
+- "Metal Color" (text) — Finish (Antique Silver, Yellow Gold, Rose Gold, Silver, Antique Gold, Oxidized Black)
+- "Look" (text) — Occasion/vibe (Oxidized, Everyday, Festive, Party, Wedding)
+- "Central Stone" (text) — Primary gemstone
+
+# MANDATORY FILTERS
+- Always exclude cancelled orders: WHERE "Sale Order Item Status" != 'CANCELLED'
+- For time-based questions, use appropriate date ranges
+- When comparing channels, ensure fair comparison by including only common time periods
+
+# EXECUTIVE METRICS
+- Revenue: SUM("Amount")
+- Units: SUM("Qty")
+- Average Order Value: SUM("Amount") / NULLIF(SUM("Qty"), 0)
+- Profit Margin: (SUM("Amount") - SUM("Cost Price" * "Qty")) / NULLIF(SUM("Amount"), 0) * 100
+- Growth Rate: Use LAG() function for period-over-period comparisons
+
+# RESPONSE FORMATTING FOR EXECUTIVES
+1. Start with a concise executive summary of key findings
+2. Present data in clean, well-formatted markdown tables
+3. Highlight the most important insights in bold
+4. Include visualizations when appropriate (charts will be auto-generated)
+5. End with actionable recommendations or suggested next analyses
+
+
 Format your response as JSON with the following structure:
 {{
   "executive_summary": "Brief overview of key findings",
