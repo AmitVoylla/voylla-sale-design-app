@@ -22,7 +22,7 @@ st.set_page_config(
 )
 
 # Minimal, stable model for deterministic SQL text output
-MODEL_NAME = "gpt-4o-mini"   # <- stable with LangChain and great at following format
+MODEL_NAME = "gpt-4o-mini"
 LLM_TEMPERATURE = 0.1
 
 # =========================
@@ -42,6 +42,7 @@ st.markdown("""
     margin-bottom: 1.2rem; border-left: 4px solid #764ba2;
 }
 .assistant-message { background-color: #f8f9fa; border-radius: 12px; padding: 1rem; border-left: 4px solid #667eea; }
+.small-muted { color:#6c757d; font-size:.85rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -105,27 +106,38 @@ engine, schema_doc = get_engine_and_schema()
 DANGEROUS = re.compile(r"\b(DROP|DELETE|UPDATE|INSERT|ALTER|TRUNCATE|CREATE|GRANT|REVOKE)\b", re.I)
 
 def make_sql_prompt(question: str, schema_text: str) -> str:
+    # ---- SINGLE (EXECUTIVE) PROMPT — replaces any duplicates ----
     return f"""
-You are a senior data analyst. Return a single **valid PostgreSQL** SELECT query for the question.
-STRICT RULES:
+You are Voylla DesignGPT Executive Edition, an expert SQL/analytics assistant for Voylla jewelry data designed for executive use.
+
+Return a single VALID PostgreSQL SELECT query for the user's request. Follow these rules strictly:
+
+GENERAL
 - Read-only SELECT statements only.
 - Only use table voylla."voylla_design_ai".
-- Always filter out cancelled items: WHERE "Sale Order Item Status" != 'CANCELLED'.
-- If time period is vague (e.g., "this quarter", "last 6 months"), infer sensible filters using "Date".
+- Always exclude cancelled orders: WHERE "Sale Order Item Status" != 'CANCELLED'.
 - Use double-quotes for all identifiers.
-- Do not add explanations, markdown, or fencing; output ONLY the SQL.
+- If time period is vague (e.g., "this quarter", "last 6 months"), infer sensible filters using "Date".
+- No explanations or markdown; output ONLY the SQL.
 
-SCHEMA:
+EXECUTIVE METRICS
+- Revenue: SUM("Amount")
+- Units: SUM("Qty")
+- AOV: SUM("Amount") / NULLIF(SUM("Qty"), 0)
+- Profit Margin: (SUM("Amount") - SUM("Cost Price" * "Qty")) / NULLIF(SUM("Amount"), 0) * 100
+- Growth Rate: use window functions (e.g., LAG) for period-over-period comparisons when needed.
+
+SCHEMA
 {schema_text}
 
-QUESTION:
+USER QUESTION
 {question}
 """
 
 def generate_sql(question: str) -> str:
     prompt = make_sql_prompt(question, schema_doc)
     sql = llm.invoke(prompt).content.strip()
-    # strip possible codefences if the model adds them
+    # strip possible codefences if present
     if sql.startswith("```"):
         sql = re.sub(r"^```[a-zA-Z0-9]*", "", sql).strip()
         sql = sql[:-3] if sql.endswith("```") else sql
@@ -133,8 +145,10 @@ def generate_sql(question: str) -> str:
     # safety
     if DANGEROUS.search(sql):
         raise ValueError("Generated SQL contains a non read-only keyword.")
-    if "voylla_design_ai" not in sql:
-        raise ValueError("SQL must reference voylla.\"voylla_design_ai\".")
+    if 'voylla_design_ai' not in sql:
+        raise ValueError('SQL must reference voylla."voylla_design_ai".')
+    if 'SELECT' not in sql.upper():
+        raise ValueError("No SELECT detected.")
     return sql
 
 def run_sql_to_df(sql: str) -> pd.DataFrame:
@@ -145,16 +159,14 @@ def run_sql_to_df(sql: str) -> pd.DataFrame:
             raise RuntimeError(f"SQL execution error: {e}")
 
 def summarize_for_executives(df: pd.DataFrame, user_q: str) -> str:
-    # Keep token-light by downsampling preview
+    # token-light preview
     preview_csv = df.head(50).to_csv(index=False)
     prompt = f"""
-You are an executive analyst. Using the user's question and the CSV preview of results,
-write a concise executive summary with:
-1) Key findings (bullets),
-2) 2-4 actionable recommendations,
-3) If applicable, call out best/worst performers.
-
-Be crisp. No markdown tables here.
+You are Voylla DesignGPT Executive Edition. In 6–9 crisp bullet points:
+- Key findings (prioritize trends/opportunities/risks)
+- 2–4 actionable recommendations
+- Call out best/worst performers when relevant
+Avoid tables and emojis. Keep it executive and concise.
 
 USER QUESTION:
 {user_q}
@@ -165,8 +177,7 @@ RESULTS PREVIEW (CSV):
     return llm.invoke(prompt).content.strip()
 
 def auto_chart(df: pd.DataFrame):
-    # pick a sensible default: first object column as x, largest numeric as y
-    if df.empty: 
+    if df.empty:
         return None
     num_cols = df.select_dtypes(include=["number"]).columns.tolist()
     cat_cols = df.select_dtypes(exclude=["number"]).columns.tolist()
@@ -176,7 +187,6 @@ def auto_chart(df: pd.DataFrame):
     x = cat_cols[0] if cat_cols else None
     try:
         if x:
-            # top-15 for readability
             work = df.copy()
             if len(work) > 15:
                 work = work.nlargest(15, y) if y in work.columns else work.head(15)
@@ -187,6 +197,22 @@ def auto_chart(df: pd.DataFrame):
         return fig
     except Exception:
         return None
+
+def should_show_table(user_q: str, df: pd.DataFrame) -> bool:
+    """Heuristic: only show table when it aids inspection."""
+    q = user_q.lower()
+    wants_detail = any(k in q for k in ["table", "list", "rows", "raw", "detail", "download", "export"])
+    compact_enough = (len(df) <= 100 and len(df.columns) <= 8)
+    ranked_or_top = any(k in q for k in ["top ", "best ", "rank", "highest", "lowest"])
+    return wants_detail or ranked_or_top or compact_enough
+
+def should_show_chart(user_q: str, df: pd.DataFrame) -> bool:
+    """Heuristic: show chart for trends/comparisons, not for wide or very long tables."""
+    q = user_q.lower()
+    trendy = any(k in q for k in ["trend", "growth", "yoy", "qoq", "mom", "over time", "by month", "by week"])
+    compare = " by " in q or any(k in q for k in ["compare", "vs", "split", "breakdown"])
+    sized_ok = 2 <= len(df) <= 500
+    return (trendy or compare) and sized_ok
 
 # =========================
 # SIDEBAR
@@ -216,6 +242,12 @@ with st.sidebar:
     for q in presets:
         if st.button(f"• {q}", key=f"preset_{hash(q)}"):
             st.session_state["auto_q"] = q
+
+    st.markdown("---")
+    st.subheader("Display Preferences")
+    smart_display = st.checkbox("Smart display (summary first; table/chart only when helpful)", value=True)
+    force_table = st.checkbox("Always show table", value=False)
+    force_chart = st.checkbox("Always show chart", value=False)
 
     st.markdown("---")
     col1, col2 = st.columns(2)
@@ -277,14 +309,26 @@ if inp:
     with st.expander("View generated SQL"):
         st.code(st.session_state.last_sql, language="sql")
 
-    # Data table & chart
+    # Smart, non-intrusive display of results
     if not df.empty:
-        st.subheader("Results")
-        st.dataframe(df, use_container_width=True)
-        fig = auto_chart(df)
-        if fig:
-            st.subheader("📊 Data Visualization")
-            st.plotly_chart(fig, use_container_width=True)
+        # Decide whether to show table/chart
+        show_tbl = force_table or (not smart_display) or should_show_table(inp, df)
+        show_cht = force_chart or (not smart_display) or should_show_chart(inp, df)
+
+        # Put table and chart behind expanders so they don't clutter the view
+        if show_tbl:
+            with st.expander("View results table"):
+                st.dataframe(df, use_container_width=True)
+                st.caption(
+                    "<div class='small-muted'>Tip: Use the download button below for the full dataset.</div>",
+                    unsafe_allow_html=True
+                )
+
+        if show_cht:
+            fig = auto_chart(df)
+            if fig:
+                with st.expander("View chart"):
+                    st.plotly_chart(fig, use_container_width=True)
 
 # Export
 if st.session_state.last_df is not None and not st.session_state.last_df.empty:
@@ -298,7 +342,7 @@ if st.session_state.last_df is not None and not st.session_state.last_df.empty:
             'Metric': ['Total Rows', 'Total Columns', 'Export Date', 'SQL'],
             'Value': [len(export_df), len(export_df.columns),
                       datetime.now().strftime("%Y-%m-%d %H:%M"),
-                      st.session_state.last_sql[:32000]]  # include SQL for audit
+                      st.session_state.last_sql[:32000]]
         })
         meta.to_excel(writer, index=False, sheet_name='Summary')
 
@@ -316,7 +360,7 @@ st.markdown("---")
 st.markdown("""
 <div style='text-align:center;color:#666;font-size:.9em;'>
 💡 <b>Executive Tips:</b> Ask about trends, comparisons, performance metrics, and growth opportunities •
-Use terms like "YoY", "QoQ", "market share", "trending", "best performing" •
+Use terms like "YoY", "QoQ", "MoM", "trending", "best performing" •
 Say "show me channel-wise performance this quarter" to start.
 </div>
 """, unsafe_allow_html=True)
