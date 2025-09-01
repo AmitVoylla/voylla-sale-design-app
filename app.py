@@ -17,7 +17,10 @@ Main fixes and improvements:
 NOTE: This file is intended to replace your previous app. Ensure you have `openai`,
 `streamlit`, `sqlalchemy`, `psycopg2-binary`, `pandas`, `plotly`, and `openpyxl` installed.
 """
-
+# At the top
+import openai
+from openai import OpenAI
+from openai.error import RateLimitError, OpenAIError
 import streamlit as st
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
@@ -30,7 +33,6 @@ import numpy as np
 from io import BytesIO
 import plotly.express as px
 from datetime import datetime
-import openai
 from typing import List, Optional
 
 # -------------------------
@@ -80,17 +82,17 @@ def call_openai_chat(messages: List[dict], max_tokens: int = 1500, stop: Optiona
                 temperature=LLM_TEMPERATURE,
                 max_tokens=max_tokens,
             )
-            content = resp['choices'][0]['message']['content']
-            return content
-        except openai.error.RateLimitError:
+            return resp['choices'][0]['message']['content']
+        except RateLimitError:
             wait = 2 ** attempt
             time.sleep(wait)
-        except Exception as e:
-            # For non-rate errors, raise after one attempt
+        except OpenAIError as e:
+            # Raise after final attempt
             if attempt == 2:
                 raise
             time.sleep(1)
     raise RuntimeError("OpenAI request failed after retries")
+
 
 # -------------------------
 # DATABASE ENGINE
