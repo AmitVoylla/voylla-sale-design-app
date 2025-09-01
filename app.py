@@ -42,7 +42,6 @@ st.markdown("""
     margin-bottom: 1.2rem; border-left: 4px solid #764ba2;
 }
 .assistant-message { background-color: #f8f9fa; border-radius: 12px; padding: 1rem; border-left: 4px solid #667eea; }
-.small-muted { color:#6c757d; font-size:.85rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -64,7 +63,6 @@ llm = get_llm()
 
 @st.cache_resource
 def get_engine_and_schema():
-    """Create engine and return schema string for the single allowed table."""
     try:
         db_host = st.secrets["DB_HOST"]
         db_port = st.secrets["DB_PORT"]
@@ -79,11 +77,9 @@ def get_engine_and_schema():
         f"postgresql+psycopg2://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}",
         pool_pre_ping=True, pool_recycle=3600, pool_size=5, max_overflow=10
     )
-    # smoke test
     with engine.connect() as conn:
         conn.execute(text("SELECT 1"))
 
-    # Build schema doc from information_schema for the allowed table
     schema_rows = []
     q = """
         SELECT column_name, data_type
@@ -106,49 +102,59 @@ engine, schema_doc = get_engine_and_schema()
 DANGEROUS = re.compile(r"\b(DROP|DELETE|UPDATE|INSERT|ALTER|TRUNCATE|CREATE|GRANT|REVOKE)\b", re.I)
 
 def make_sql_prompt(question: str, schema_text: str) -> str:
-    # ---- SINGLE (EXECUTIVE) PROMPT — replaces any duplicates ----
     return f"""
-You are Voylla DesignGPT Executive Edition, an expert SQL/analytics assistant for Voylla jewelry data designed for executive use.
+You are Voylla DesignGPT Executive Edition, an expert SQL/analytics assistant for Voylla jewelry data analysis designed for executives.
 
-Return a single VALID PostgreSQL SELECT query for the user's request. Follow these rules strictly:
-
-GENERAL
-- Read-only SELECT statements only.
-- Only use table voylla."voylla_design_ai".
-- Always exclude cancelled orders: WHERE "Sale Order Item Status" != 'CANCELLED'.
-- Use double-quotes for all identifiers.
-- If time period is vague (e.g., "this quarter", "last 6 months"), infer sensible filters using "Date".
-- No explanations or markdown; output ONLY the SQL.
-
-EXECUTIVE METRICS
-- Revenue: SUM("Amount")
-- Units: SUM("Qty")
-- AOV: SUM("Amount") / NULLIF(SUM("Qty"), 0)
-- Profit Margin: (SUM("Amount") - SUM("Cost Price" * "Qty")) / NULLIF(SUM("Amount"), 0) * 100
-- Growth Rate: use window functions (e.g., LAG) for period-over-period comparisons when needed.
-
-SCHEMA
+# DATABASE SCHEMA
 {schema_text}
 
-USER QUESTION
+# KEY COLUMNS FOR EXECUTIVE ANALYSIS
+### Business Metrics
+- "Date" (timestamp) — Transaction date
+- "Channel" (text) — Sales platform (Cloudtail, FLIPKART, MYNTRA, NYKAA, etc.)
+- "Sale Order Item Status" (text) — Filter with: WHERE "Sale Order Item Status" != 'CANCELLED'
+- "Qty" (integer) — Units sold
+- "Amount" (numeric) — Revenue (Qty × price)
+- "MRP" (numeric) — Maximum Retail Price
+- "Cost Price" (numeric) — Unit cost
+
+### Design Intelligence
+- "Design Style" (text) — Aesthetic (Tribal, Contemporary, Traditional/Ethnic, Minimalist)
+- "Form" (text) — Shape (Triangle, Stud, Hoop, Jhumka, Ear Cuff)
+- "Metal Color" (text) — Finish (Antique Silver, Yellow Gold, Rose Gold, Silver, Antique Gold, Oxidized Black)
+- "Look" (text) — Occasion/vibe (Oxidized, Everyday, Festive, Party, Wedding)
+- "Central Stone" (実はtext) — Primary gemstone
+
+# MANDATORY RULES
+- Generate only valid PostgreSQL SELECT queries.
+- Only use table voylla."voylla_design_ai".
+- Always exclude cancelled orders: WHERE "Sale Order Item Status" != 'CANCELLED'.
+- For time-based questions (e.g., "this quarter", "last 6 months"), infer sensible date filters using "Date".
+- Use double-quotes for all identifiers.
+- Output ONLY the SQL query, no explanations or markdown.
+
+# EXECUTIVE METRICS
+- Revenue: SUM("Amount")
+- Units: SUM("Qty")
+- Average Order Value: SUM("Amount") / NULLIF(SUM("Qty"), 0)
+- Profit Margin: (SUM("Amount") - SUM("Cost Price" * "Qty")) / NULLIF(SUM("Amount"), 0) * 100
+- Growth Rate: Use LAG() for period-over-period comparisons
+
+QUESTION:
 {question}
 """
 
 def generate_sql(question: str) -> str:
     prompt = make_sql_prompt(question, schema_doc)
     sql = llm.invoke(prompt).content.strip()
-    # strip possible codefences if present
     if sql.startswith("```"):
         sql = re.sub(r"^```[a-zA-Z0-9]*", "", sql).strip()
         sql = sql[:-3] if sql.endswith("```") else sql
         sql = sql.strip()
-    # safety
     if DANGEROUS.search(sql):
         raise ValueError("Generated SQL contains a non read-only keyword.")
-    if 'voylla_design_ai' not in sql:
-        raise ValueError('SQL must reference voylla."voylla_design_ai".')
-    if 'SELECT' not in sql.upper():
-        raise ValueError("No SELECT detected.")
+    if "voylla_design_ai" not in sql:
+        raise ValueError("SQL must reference voylla.\"voylla_design_ai\".")
     return sql
 
 def run_sql_to_df(sql: str) -> pd.DataFrame:
@@ -159,14 +165,15 @@ def run_sql_to_df(sql: str) -> pd.DataFrame:
             raise RuntimeError(f"SQL execution error: {e}")
 
 def summarize_for_executives(df: pd.DataFrame, user_q: str) -> str:
-    # token-light preview
     preview_csv = df.head(50).to_csv(index=False)
     prompt = f"""
-You are Voylla DesignGPT Executive Edition. In 6–9 crisp bullet points:
-- Key findings (prioritize trends/opportunities/risks)
-- 2–4 actionable recommendations
-- Call out best/worst performers when relevant
-Avoid tables and emojis. Keep it executive and concise.
+You are an executive analyst for Voylla jewelry. Using the user's question and CSV preview of results, provide a concise executive summary with:
+1) Key findings (2-4 bullets, focus on trends, opportunities, risks)
+2) 2-4 actionable recommendations
+3) Highlight best/worst performers if relevant
+4) Suggest if a visualization (e.g., bar chart, line chart) would enhance understanding
+
+Use clear, professional language suitable for executives. Avoid markdown tables. If no visualization is needed, state why.
 
 USER QUESTION:
 {user_q}
@@ -176,43 +183,36 @@ RESULTS PREVIEW (CSV):
 """
     return llm.invoke(prompt).content.strip()
 
+def should_display_chart(df: pd.DataFrame, summary: str) -> bool:
+    """Determine if a chart is appropriate based on data and summary."""
+    if df.empty:
+        return False
+    num_cols = df.select_dtypes(include=["number"]).columns.tolist()
+    cat_cols = df.select_dtypes(exclude=["number"]).columns.tolist()
+    # Check if summary suggests a visualization
+    if "visualization" in summary.lower() and (len(num_cols) >= 1 and len(cat_cols) >= 1):
+        return True
+    # Heuristic: chart if we have at least one numeric and one categorical column, and not too many rows
+    return len(num_cols) >= 1 and len(cat_cols) >= 1 and len(df) <= 100
+
 def auto_chart(df: pd.DataFrame):
     if df.empty:
         return None
     num_cols = df.select_dtypes(include=["number"]).columns.tolist()
     cat_cols = df.select_dtypes(exclude=["number"]).columns.tolist()
-    if not num_cols:
+    if not num_cols or not cat_cols:
         return None
-    y = num_cols[0]
-    x = cat_cols[0] if cat_cols else None
+    y = num_cols[0]  # Pick first numeric column
+    x = cat_cols[0]  # Pick first categorical column
     try:
-        if x:
-            work = df.copy()
-            if len(work) > 15:
-                work = work.nlargest(15, y) if y in work.columns else work.head(15)
-            fig = px.bar(work, x=x, y=y, title=f"{y} by {x}")
-        else:
-            fig = px.line(df, y=y, title=f"Trend of {y}")
+        work = df.copy()
+        if len(work) > 15:
+            work = work.nlargest(15, y) if y in work.columns else work.head(15)
+        fig = px.bar(work, x=x, y=y, title=f"{y} by {x}")
         fig.update_layout(height=420, showlegend=False)
         return fig
     except Exception:
         return None
-
-def should_show_table(user_q: str, df: pd.DataFrame) -> bool:
-    """Heuristic: only show table when it aids inspection."""
-    q = user_q.lower()
-    wants_detail = any(k in q for k in ["table", "list", "rows", "raw", "detail", "download", "export"])
-    compact_enough = (len(df) <= 100 and len(df.columns) <= 8)
-    ranked_or_top = any(k in q for k in ["top ", "best ", "rank", "highest", "lowest"])
-    return wants_detail or ranked_or_top or compact_enough
-
-def should_show_chart(user_q: str, df: pd.DataFrame) -> bool:
-    """Heuristic: show chart for trends/comparisons, not for wide or very long tables."""
-    q = user_q.lower()
-    trendy = any(k in q for k in ["trend", "growth", "yoy", "qoq", "mom", "over time", "by month", "by week"])
-    compare = " by " in q or any(k in q for k in ["compare", "vs", "split", "breakdown"])
-    sized_ok = 2 <= len(df) <= 500
-    return (trendy or compare) and sized_ok
 
 # =========================
 # SIDEBAR
@@ -244,12 +244,6 @@ with st.sidebar:
             st.session_state["auto_q"] = q
 
     st.markdown("---")
-    st.subheader("Display Preferences")
-    smart_display = st.checkbox("Smart display (summary first; table/chart only when helpful)", value=True)
-    force_table = st.checkbox("Always show table", value=False)
-    force_chart = st.checkbox("Always show chart", value=False)
-
-    st.markdown("---")
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🗑️ Clear Chat", use_container_width=True):
@@ -278,7 +272,7 @@ for m in st.session_state.chat:
     with st.chat_message(m["role"]):
         st.markdown(m["content"] if m["role"]=="assistant" else m["content"])
 
-# Always-visible input (keeps mobile keyboard)
+# Always-visible input
 inp = st.chat_input("Ask an executive question about sales or design trends…", key="chat_box")
 if st.session_state.auto_q:
     inp = st.session_state.auto_q
@@ -309,26 +303,15 @@ if inp:
     with st.expander("View generated SQL"):
         st.code(st.session_state.last_sql, language="sql")
 
-    # Smart, non-intrusive display of results
+    # Data table & chart
     if not df.empty:
-        # Decide whether to show table/chart
-        show_tbl = force_table or (not smart_display) or should_show_table(inp, df)
-        show_cht = force_chart or (not smart_display) or should_show_chart(inp, df)
-
-        # Put table and chart behind expanders so they don't clutter the view
-        if show_tbl:
-            with st.expander("View results table"):
-                st.dataframe(df, use_container_width=True)
-                st.caption(
-                    "<div class='small-muted'>Tip: Use the download button below for the full dataset.</div>",
-                    unsafe_allow_html=True
-                )
-
-        if show_cht:
+        st.subheader("Results")
+        st.dataframe(df, use_container_width=True)
+        if should_display_chart(df, summary):
             fig = auto_chart(df)
             if fig:
-                with st.expander("View chart"):
-                    st.plotly_chart(fig, use_container_width=True)
+                st.subheader("📊 Data Visualization")
+                st.plotly_chart(fig, use_container_width=True)
 
 # Export
 if st.session_state.last_df is not None and not st.session_state.last_df.empty:
@@ -360,7 +343,7 @@ st.markdown("---")
 st.markdown("""
 <div style='text-align:center;color:#666;font-size:.9em;'>
 💡 <b>Executive Tips:</b> Ask about trends, comparisons, performance metrics, and growth opportunities •
-Use terms like "YoY", "QoQ", "MoM", "trending", "best performing" •
+Use terms like "YoY", "MoM", "QoQ", "market share", "trending", "best performing" •
 Say "show me channel-wise performance this quarter" to start.
 </div>
 """, unsafe_allow_html=True)
