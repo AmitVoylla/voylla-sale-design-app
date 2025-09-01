@@ -1,18 +1,21 @@
 #!/usr/bin/env python
 # coding: utf-8
-
 import streamlit as st
 from langchain_openai import ChatOpenAI
 from langchain.memory import ConversationBufferMemory
+from langchain.chains import ConversationChain
+from langchain.prompts import PromptTemplate
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
-import os, re, time, json
+import os, re, time
 import pandas as pd
 import numpy as np
 from io import BytesIO
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
+import json
 
 # =========================
 # CONFIG
@@ -24,9 +27,9 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Model configuration (fast + stable)
-MODEL_NAME = "gpt-4.1-mini"   # more deterministic and quick for SQL/JSON tasks
-LLM_TEMPERATURE = 0.05
+# Model configuration
+MODEL_NAME = "gpt-4"
+LLM_TEMPERATURE = 0.1
 
 # =========================
 # STYLES
@@ -67,7 +70,18 @@ st.markdown("""
     box-shadow: 0 2px 4px rgba(0,0,0,0.05);
     border-left: 4px solid #4682b4;
 }
-.stButton button { width: 100%; }
+.conversation-item {
+    background-color: white;
+    border-radius: 8px;
+    padding: 1rem;
+    margin: 0.5rem 0;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    border-left: 4px solid #e0e0e0;
+}
+.stButton button {
+    width: 100%;
+}
+.css-1d391kg {padding: 1.5rem;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -79,11 +93,12 @@ api_key = os.getenv("OPENAI_API_KEY")
 if not api_key:
     st.error("🔑 No OpenAI key found – please add it to your app Secrets or .env")
     st.stop()
+
 os.environ["OPENAI_API_KEY"] = api_key
 
 @st.cache_resource
 def get_llm():
-    return ChatOpenAI(model=MODEL_NAME, temperature=LLM_TEMPERATURE, request_timeout=60, max_retries=2)
+    return ChatOpenAI(model=MODEL_NAME, temperature=LLM_TEMPERATURE, request_timeout=120, max_retries=3)
 
 llm = get_llm()
 
@@ -104,12 +119,13 @@ def get_engine_and_schema():
         f"postgresql+psycopg2://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}",
         pool_pre_ping=True, pool_recycle=3600, pool_size=5, max_overflow=10
     )
+
     # smoke test
     with engine.connect() as conn:
         conn.execute(text("SELECT 1"))
 
     # Build schema doc from information_schema for the allowed table
-    rows = []
+    schema_rows = []
     q = """
         SELECT column_name, data_type, is_nullable
         FROM information_schema.columns
@@ -117,435 +133,362 @@ def get_engine_and_schema():
         ORDER BY ordinal_position
     """
     with engine.connect() as conn:
-        for c, t, n in conn.execute(text(q)).fetchall():
-            rows.append(f'- "{c}" ({t}, nullable: {n})')
-    schema_string = "Table: voylla.\"voylla_design_ai\" (read-only)\n" + "\n".join(rows)
+        rows = conn.execute(text(q)).fetchall()
+        for c, t, n in rows:
+            schema_rows.append(f'- "{c}" ({t}, nullable: {n})')
+    
+    schema_string = "Table: voylla.\"voylla_design_ai\" (read-only)\n" + "\n".join(schema_rows)
     return engine, schema_string
 
 engine, schema_doc = get_engine_and_schema()
 
 # =========================
-# MEMORY
+# MEMORY & CONVERSATION MANAGEMENT
 # =========================
 @st.cache_resource
 def get_memory():
     return ConversationBufferMemory(return_messages=True, memory_key="chat_history")
 
-memory = get_memory()
+# Don't cache memory - we want it to persist within session but not across sessions
+if "conversation_memory" not in st.session_state:
+    st.session_state.conversation_memory = ConversationBufferMemory(return_messages=True, memory_key="chat_history")
+
+memory = st.session_state.conversation_memory
 
 # =========================
 # HELPERS
 # =========================
-DANGEROUS = re.compile(r"\\b(DROP|DELETE|UPDATE|INSERT|ALTER|TRUNCATE|CREATE|GRANT|REVOKE)\\b", re.I)
+DANGEROUS = re.compile(r"\b(DROP|DELETE|UPDATE|INSERT|ALTER|TRUNCATE|CREATE|GRANT|REVOKE)\b", re.I)
 
-def make_sql_prompt(question: str, schema_text: str, history: list | None = None) -> str:
+def make_sql_prompt(question: str, schema_text: str, history: list = None) -> str:
     history_text = ""
     if history:
-        # only last few utterances to keep prompt tight
-        compact = []
-        for m in history[-4:]:
-            role = m.get("role", "user")
-            content = m.get("content", "")
-            compact.append(f"{role}: {content}")
-        history_text = "\\n# CONVERSATION HISTORY (last 4):\\n" + "\\n".join(compact)
-
+        # Only use last few relevant exchanges for context
+        recent_history = history[-6:] if len(history) > 6 else history
+        history_text = "\n# CONVERSATION HISTORY:\n" + "\n".join([
+            f"User: {m['content']}" if m['role'] == 'user' else f"Assistant: Generated SQL for analysis"
+            for m in recent_history
+        ])
+    
     return f"""
-You are a senior data analyst generating a single **valid PostgreSQL** SELECT query.
+You are an expert PostgreSQL data analyst specializing in jewelry business intelligence.
+Generate ONLY a valid PostgreSQL SELECT query to answer the user's question.
 
-STRICT RULES:
-- Read-only SELECT statements only.
-- Use only table voylla."voylla_design_ai" (alias allowed).
-- Always exclude cancelled items: WHERE "Sale Order Item Status" != 'CANCELLED'.
-- Use ONLY columns that exist in the schema. Do not invent columns.
-- If the request needs revenue, use SUM("Amount"); units use SUM("Qty").
-- Profit/margin proxy is allowed using "Cost Price": (SUM("Amount") - SUM("Cost Price" * "Qty")) AS profit.
-- If time period is vague (e.g., "this quarter", "last 6 months"), derive filter using column "Date".
-- Use double-quotes for all identifiers.
-- Output ONLY the SQL (no markdown, no fencing, no commentary).
+CRITICAL REQUIREMENTS:
+1. Use ONLY voylla."voylla_design_ai" table
+2. ALWAYS exclude cancelled items: WHERE "Sale Order Item Status" != 'CANCELLED'
+3. Use double quotes for ALL column names: "Column Name"
+4. Return ONLY the SQL query - NO explanations, markdown, or code blocks
+5. For time periods, use appropriate date filters on "Date" column
+6. For aggregations, use proper GROUP BY clauses
+7. For rankings/top items, use ORDER BY with LIMIT
+
+COMMON PATTERNS:
+- Revenue analysis: SUM("Amount")
+- Unit sales: SUM("Qty") 
+- Average order value: SUM("Amount")/NULLIF(SUM("Qty"),0)
+- Profit margin: (SUM("Amount") - SUM("Cost Price" * "Qty"))/NULLIF(SUM("Amount"),0) * 100
+- Time periods: DATE_TRUNC('month', "Date") for monthly data
+- Recent data: "Date" >= CURRENT_DATE - INTERVAL '30 days'
 
 SCHEMA:
 {schema_text}
 {history_text}
 
-QUESTION:
-{question}
-""".strip()
+USER QUESTION: {question}
 
-def refine_sql_prompt(question: str, schema_text: str, error_msg: str, last_sql: str) -> str:
-    return f"""
-Your previous SQL caused an error.
+SQL QUERY:"""
 
-QUESTION:
-{question}
-
-SCHEMA:
-{schema_text}
-
-PREVIOUS SQL (incorrect):
-{last_sql}
-
-DB ERROR:
-{error_msg}
-
-TASK:
-Return a corrected **single** PostgreSQL SELECT query that obeys ALL rules:
-- Read-only; use only voylla."voylla_design_ai".
-- Must include WHERE "Sale Order Item Status" != 'CANCELLED'.
-- Use only columns from the schema above.
-- Output only the SQL (no Markdown, no backticks, no explanations).
-""".strip()
-
-def enforce_cancelled_filter(sql: str) -> str:
-    """Ensure the CANCELLED filter exists; if missing, inject it safely."""
-    if re.search(r'"Sale Order Item Status"\\s*!=\\s*\'CANCELLED\'', sql, re.I):
-        return sql
-    # find presence of WHERE
-    if re.search(r'\\bWHERE\\b', sql, re.I):
-        # add AND condition before GROUP BY / ORDER BY / LIMIT / ;
-        return re.sub(
-            r'\\bWHERE\\b',
-            'WHERE "Sale Order Item Status" != \'CANCELLED\' AND ',
-            sql,
-            flags=re.I,
-            count=1
-        )
-    else:
-        # insert WHERE before GROUP BY/ORDER BY/LIMIT/;
-        split_pat = r'\\b(GROUP\\s+BY|ORDER\\s+BY|LIMIT)\\b'
-        m = re.search(split_pat, sql, re.I)
-        if m:
-            pos = m.start()
-            prefix, suffix = sql[:pos], sql[pos:]
-            return f'{prefix} WHERE "Sale Order Item Status" != \'CANCELLED\' {suffix}'
-        else:
-            # no trailing clause; just append WHERE
-            sql_wo_semicolon = sql.strip().rstrip(';')
-            return f'{sql_wo_semicolon} WHERE "Sale Order Item Status" != \'CANCELLED\';'
-
-def enforce_schema_qual(sql: str) -> str:
-    """Ensure table is schema-qualified."""
-    # If query already has voylla."voylla_design_ai", return.
-    if 'voylla."voylla_design_ai"' in sql:
-        return sql
-    # Replace unqualified references "voylla_design_ai" with voylla."voylla_design_ai"
-    sql = re.sub(r'\\b"voylla_design_ai"\\b', 'voylla."voylla_design_ai"', sql)
-    sql = re.sub(r'\\bvoylla_design_ai\\b', 'voylla."voylla_design_ai"', sql)
-    return sql
-
-def strip_code_fences(s: str) -> str:
-    s = s.strip()
-    if s.startswith("```"):
-        s = re.sub(r"^```[a-zA-Z0-9]*", "", s).strip()
-        s = s[:-3] if s.endswith("```") else s
-    return s.strip()
-
-def validate_read_only(sql: str):
-    if DANGEROUS.search(sql):
-        raise ValueError("Generated SQL contains a non read-only keyword.")
-
-def _llm_sql(question: str, history: list | None = None) -> str:
+def generate_sql(question: str, history: list = None) -> str:
+    """Generate SQL with improved accuracy and context awareness"""
     prompt = make_sql_prompt(question, schema_doc, history)
-    raw = llm.invoke(prompt).content
-    sql = strip_code_fences(raw)
-    sql = enforce_schema_qual(sql)
-    sql = enforce_cancelled_filter(sql)
-    validate_read_only(sql)
-    if 'voylla."voylla_design_ai"' not in sql:
-        raise ValueError("SQL must reference voylla.\"voylla_design_ai\".")
-    return sql
-
-@st.cache_data(show_spinner=False, ttl=600)
-def run_sql_to_df(sql: str) -> pd.DataFrame:
-    with engine.connect() as conn:
-        return pd.read_sql_query(sql, conn)
-
-def generate_and_run_sql(question: str, history: list | None = None) -> tuple[pd.DataFrame, str]:
-    """Generate SQL; execute; if fails, auto-refine once with DB error message."""
-    sql1 = _llm_sql(question, history)
+    
     try:
-        df = run_sql_to_df(sql1)
-        return df, sql1
+        response = llm.invoke(prompt)
+        sql = response.content.strip()
+        
+        # Clean up the response
+        if sql.startswith("```"):
+            sql = re.sub(r"^```[a-zA-Z0-9]*\n?", "", sql)
+            sql = sql.replace("```", "")
+        
+        sql = sql.strip()
+        
+        # Ensure basic requirements
+        if not sql.upper().startswith("SELECT"):
+            raise ValueError("Query must be a SELECT statement")
+        
+        if DANGEROUS.search(sql):
+            raise ValueError("Generated SQL contains non-read-only operations")
+        
+        if "voylla_design_ai" not in sql:
+            raise ValueError("SQL must reference the voylla_design_ai table")
+        
+        # Add cancelled filter if not present
+        if "CANCELLED" not in sql.upper():
+            if "WHERE" in sql.upper():
+                sql = sql.replace("WHERE", 'WHERE "Sale Order Item Status" != \'CANCELLED\' AND')
+            else:
+                sql += ' WHERE "Sale Order Item Status" != \'CANCELLED\''
+        
+        return sql
+        
     except Exception as e:
-        # Ask the model to fix using the actual DB error
-        fix_prompt = refine_sql_prompt(question, schema_doc, str(e), sql1)
-        sql2 = strip_code_fences(llm.invoke(fix_prompt).content)
-        sql2 = enforce_schema_qual(sql2)
-        sql2 = enforce_cancelled_filter(sql2)
-        validate_read_only(sql2)
-        if 'voylla."voylla_design_ai"' not in sql2:
-            raise RuntimeError(f"Second SQL still invalid. Error was: {e}")
-        # Second try
-        df = run_sql_to_df(sql2)
-        return df, sql2
+        st.error(f"SQL generation error: {e}")
+        raise
 
-def analyze_data_fast(df: pd.DataFrame, user_q: str) -> dict:
-    """Deterministic, no-LLM analysis for speed and fewer mistakes."""
-    if df is None or df.empty:
+def run_sql_to_df(sql: str) -> pd.DataFrame:
+    """Execute SQL with better error handling"""
+    with engine.connect() as conn:
+        try:
+            df = pd.read_sql_query(sql, conn)
+            return df
+        except Exception as e:
+            st.error(f"Database error: {e}")
+            raise RuntimeError(f"SQL execution error: {e}")
+
+def analyze_data_improved(df: pd.DataFrame, user_q: str, history: list = None) -> dict:
+    """Improved analysis with more structured and accurate insights"""
+    
+    if df.empty:
         return {
-            "executive_summary": "No data returned for the query.",
+            "executive_summary": "No data found for the specified criteria.",
             "key_metrics": {},
             "insights": [],
             "recommendations": [],
             "followup_questions": []
         }
-
-    # Basic metrics (guarded)
-    rev = float(df["Amount"].sum()) if "Amount" in df.columns else None
-    units = float(df["Qty"].sum()) if "Qty" in df.columns else None
-    aov = (rev / units) if (rev is not None and units and units != 0) else None
-    profit = None
-    margin_pct = None
-    if all(col in df.columns for col in ["Cost Price", "Qty", "Amount"]):
-        profit = float((df["Amount"] - df["Cost Price"] * df["Qty"]).sum())
-        margin_pct = (profit / rev * 100.0) if (rev and rev != 0) else None
-
-    # Top splits, if present
-    splits = []
-    for col in ["Channel", "Design Style", "Metal Color", "Form", "Look"]:
-        if col in df.columns:
-            grp = (df.groupby(col)["Amount"].sum().sort_values(ascending=False).head(5)
-                   if "Amount" in df.columns else
-                   df.groupby(col).size().sort_values(ascending=False).head(5))
-            splits.append((col, grp))
-
-    insights = []
-    if splits:
-        col, grp = splits[0]
-        top_name = str(grp.index[0])
-        top_val = float(grp.iloc[0])
-        share = (top_val / rev * 100.0) if (rev and rev != 0 and "Amount" in df.columns) else None
-        insights.append({
-            "title": f"Top {col}",
-            "description": f"{top_name} leads the {col.lower()} mix.",
-            "impact": "Prioritize inventory & marketing on the leading segment.",
-            "data_support": f"{top_name}: {top_val:,.2f}" + (f" ({share:.1f}% of revenue)" if share else "")
-        })
-
-    if margin_pct is not None:
-        insights.append({
-            "title": "Healthy profit signal" if margin_pct >= 20 else "Margin risk",
-            "description": "Overall margin outlook from returned dataset.",
-            "impact": "Adjust pricing or costs based on realized margins.",
-            "data_support": f"Profit: {profit:,.2f}, Margin: {margin_pct:.1f}%"
-        })
-
-    recs = [
-        {
-            "title": "Double down on top segment",
-            "description": "Allocate budget and placements to the best performing channel/segment.",
-            "expected_impact": "Higher ROAS and faster sell-through"
-        },
-        {
-            "title": "Focus price-band mix",
-            "description": "Optimize assortment around price bands contributing most to AOV.",
-            "expected_impact": "Improved revenue per unit"
-        }
-    ]
-    if margin_pct is not None and margin_pct < 20:
-        recs.append({
-            "title": "Cost review",
-            "description": "Review BOM and vendor terms for high-volume SKUs with weak margins.",
-            "expected_impact": "2–5% margin lift"
-        })
-
-    key_metrics = {}
-    if rev is not None: key_metrics["Revenue"] = f"₹{rev:,.2f}"
-    if units is not None: key_metrics["Units"] = f"{units:,.0f}"
-    if aov is not None: key_metrics["AOV"] = f"₹{aov:,.2f}"
-    if margin_pct is not None: key_metrics["Margin %"] = f"{margin_pct:.1f}%"
-
-    return {
-        "executive_summary": "Snapshot built from the returned dataset with priority splits and margin proxy.",
-        "key_metrics": key_metrics,
-        "insights": insights,
-        "recommendations": recs,
-        "followup_questions": [
-            "Drill down by channel and month",
-            "Compare top 10 SKUs YoY",
-            "Check price-band contribution and returns rate"
-        ]
-    }
-
-def analyze_data_llm(df: pd.DataFrame, user_q: str, history: list | None = None) -> dict:
-    """LLM analysis (kept for depth); guarded with JSON parse fallback."""
+    
+    # Create more focused analysis prompt
     analysis_prompt = f"""
-You are an executive data analyst at Voylla.
-Analyze the provided data to answer the user's question and provide actionable insights.
+You are a senior business analyst at Voylla jewelry company. Analyze the data and provide actionable insights.
 
 USER QUESTION: {user_q}
 
-DATA PREVIEW (first 20 rows):
-{df.head(20).to_csv(index=False)}
-
-DATA STRUCTURE:
-- Shape: {df.shape}
+DATA SUMMARY:
+- Total Records: {len(df)}
 - Columns: {list(df.columns)}
-- Data types: {df.dtypes.to_dict()}
+- Date Range: {df['Date'].min() if 'Date' in df.columns else 'N/A'} to {df['Date'].max() if 'Date' in df.columns else 'N/A'}
 
-ANALYSIS REQUIREMENTS:
-1. Executive summary
-2. 3–5 insights with supporting data
-3. Trends/patterns/anomalies
-4. Compare metrics (YoY/MoM/QoQ) if relevant
-5. 3–5 actionable recommendations
-6. 2–3 follow-up questions
+KEY DATA POINTS:
+{df.head(10).to_string()}
 
-Return strict JSON with:
+STATISTICAL SUMMARY:
+{df.describe().to_string() if not df.empty else 'No numeric data'}
+
+Provide your analysis in the following JSON format:
 {{
-  "executive_summary": "...",
+  "executive_summary": "Clear 2-3 sentence summary of key findings",
   "key_metrics": {{
-    "metric1": "value1"
+    "total_revenue": "value if applicable",
+    "total_units": "value if applicable", 
+    "avg_order_value": "value if applicable",
+    "top_performer": "value if applicable"
   }},
   "insights": [
-    {{"title": "...", "description": "...", "impact": "...", "data_support": "..."}}
+    {{
+      "title": "Specific insight title",
+      "description": "Detailed explanation with numbers",
+      "impact": "Business impact level (High/Medium/Low)",
+      "data_support": "Specific numbers from the data"
+    }}
   ],
   "recommendations": [
-    {{"title": "...", "description": "...", "expected_impact": "..."}}
+    {{
+      "title": "Actionable recommendation",
+      "description": "What to do and why",
+      "expected_impact": "Expected business outcome"
+    }}
   ],
-  "followup_questions": ["...", "..."]
+  "followup_questions": [
+    "Specific analytical question based on findings",
+    "Another relevant question"
+  ]
 }}
-""".strip()
-
+"""
+    
     try:
-        raw = llm.invoke(analysis_prompt).content.strip()
-        return json.loads(raw)
-    except Exception:
-        return analyze_data_fast(df, user_q)  # safe fallback
+        response = llm.invoke(analysis_prompt).content.strip()
+        # Clean JSON response
+        if response.startswith("```json"):
+            response = response.replace("```json", "").replace("```", "").strip()
+        
+        analysis = json.loads(response)
+        
+        # Calculate actual metrics from data
+        actual_metrics = {}
+        if 'Amount' in df.columns:
+            actual_metrics['Total Revenue'] = f"₹{df['Amount'].sum():,.2f}"
+        if 'Qty' in df.columns:
+            actual_metrics['Total Units'] = f"{df['Qty'].sum():,}"
+        if 'Amount' in df.columns and 'Qty' in df.columns and df['Qty'].sum() > 0:
+            actual_metrics['Avg Order Value'] = f"₹{df['Amount'].sum() / df['Qty'].sum():.2f}"
+        
+        # Merge with calculated metrics
+        analysis['key_metrics'].update(actual_metrics)
+        
+        return analysis
+        
+    except Exception as e:
+        st.warning(f"Analysis parsing error: {e}")
+        # Fallback analysis
+        return {
+            "executive_summary": f"Analysis completed for {len(df)} records. Key patterns identified in the data.",
+            "key_metrics": {
+                "Total Records": str(len(df)),
+                "Columns Analyzed": str(len(df.columns))
+            },
+            "insights": [
+                {
+                    "title": "Data Overview",
+                    "description": f"Analyzed {len(df)} records across {len(df.columns)} dimensions",
+                    "impact": "Medium",
+                    "data_support": f"Dataset contains {len(df)} rows"
+                }
+            ],
+            "recommendations": [
+                {
+                    "title": "Further Analysis Needed",
+                    "description": "Consider drilling down into specific metrics for deeper insights",
+                    "expected_impact": "Better understanding of business trends"
+                }
+            ],
+            "followup_questions": [
+                "What are the top performing categories?",
+                "How do sales vary by time period?"
+            ]
+        }
 
-def create_advanced_visualizations(df: pd.DataFrame):
-    """Create multiple visualizations based on data."""
+def create_smart_visualizations(df: pd.DataFrame, analysis: dict, question: str):
+    """Create relevant visualizations based on data and question context"""
     visualizations = []
-    if df is None or df.empty:
+    
+    if df.empty:
         return visualizations
-
-    # Time series if Date-like & numeric present
-    date_cols = [c for c in df.columns if 'date' in c.lower() or 'time' in c.lower()]
-    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-
-    if date_cols and numeric_cols:
-        date_col = date_cols[0]
-        try:
-            dft = df.copy()
-            dft[date_col] = pd.to_datetime(dft[date_col])
-            ts = dft.groupby(pd.Grouper(key=date_col, freq='M'))[numeric_cols[0]].sum().reset_index()
-            fig = px.line(ts, x=date_col, y=numeric_cols[0], title=f"Trend of {numeric_cols[0]} Over Time")
-            fig.update_layout(height=380)
+    
+    try:
+        # 1. Time series if date data exists
+        if 'Date' in df.columns:
+            df_copy = df.copy()
+            df_copy['Date'] = pd.to_datetime(df_copy['Date'])
+            
+            # Revenue over time
+            if 'Amount' in df.columns:
+                time_df = df_copy.groupby(df_copy['Date'].dt.to_period('M'))['Amount'].sum().reset_index()
+                time_df['Date'] = time_df['Date'].dt.to_timestamp()
+                
+                fig = px.line(time_df, x='Date', y='Amount', 
+                             title="Revenue Trend Over Time",
+                             labels={'Amount': 'Revenue (₹)', 'Date': 'Month'})
+                fig.update_layout(height=400)
+                visualizations.append(fig)
+        
+        # 2. Category analysis
+        categorical_cols = ['Channel', 'Design Style', 'Form', 'Metal Color', 'Look', 'Central Stone']
+        available_cats = [col for col in categorical_cols if col in df.columns]
+        
+        if available_cats and 'Amount' in df.columns:
+            cat_col = available_cats[0]
+            top_df = df.groupby(cat_col)['Amount'].sum().nlargest(10).reset_index()
+            
+            fig = px.bar(top_df, x=cat_col, y='Amount',
+                        title=f"Top 10 {cat_col} by Revenue",
+                        labels={'Amount': 'Revenue (₹)'})
+            fig.update_layout(height=400, xaxis_tickangle=-45)
             visualizations.append(fig)
-        except Exception:
-            pass
-
-    # Top categories
-    categorical_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
-    if categorical_cols and numeric_cols:
-        cat_col = categorical_cols[0]
-        top_df = df.groupby(cat_col)[numeric_cols[0]].sum().nlargest(10).reset_index()
-        fig = px.bar(top_df, x=cat_col, y=numeric_cols[0], title=f"Top 10 {cat_col} by {numeric_cols[0]}")
-        fig.update_layout(height=380, xaxis_tickangle=-45)
-        visualizations.append(fig)
-
-    # Distribution
-    if numeric_cols:
-        fig = px.histogram(df, x=numeric_cols[0], title=f"Distribution of {numeric_cols[0]}")
-        fig.update_layout(height=380)
-        visualizations.append(fig)
-
-    # Correlation heatmap
-    if len(numeric_cols) > 1:
-        corr = df[numeric_cols].corr(numeric_only=True)
-        fig = px.imshow(corr, text_auto=True, aspect="auto", title="Correlation Between Metrics")
-        fig.update_layout(height=380)
-        visualizations.append(fig)
-
+        
+        # 3. Distribution charts
+        if 'Amount' in df.columns:
+            fig = px.histogram(df, x='Amount', bins=20,
+                              title="Revenue Distribution",
+                              labels={'Amount': 'Revenue (₹)', 'count': 'Frequency'})
+            fig.update_layout(height=400)
+            visualizations.append(fig)
+        
+        # 4. Performance comparison
+        if len(available_cats) >= 2 and 'Amount' in df.columns:
+            pivot_df = df.groupby([available_cats[0], available_cats[1]])['Amount'].sum().reset_index()
+            top_categories = df.groupby(available_cats[0])['Amount'].sum().nlargest(5).index
+            pivot_df = pivot_df[pivot_df[available_cats[0]].isin(top_categories)]
+            
+            fig = px.bar(pivot_df, x=available_cats[0], y='Amount', color=available_cats[1],
+                        title=f"Revenue by {available_cats[0]} and {available_cats[1]}",
+                        labels={'Amount': 'Revenue (₹)'})
+            fig.update_layout(height=400, xaxis_tickangle=-45)
+            visualizations.append(fig)
+            
+    except Exception as e:
+        st.warning(f"Visualization error: {e}")
+    
     return visualizations
 
 def display_analysis(analysis: dict):
-    """Render analysis cleanly."""
+    """Display analysis in structured format"""
+    
+    # Executive Summary
     st.markdown("### 📋 Executive Summary")
-    st.info(analysis.get("executive_summary", "No summary available."))
-
+    st.markdown(f"<div class='executive-summary'>{analysis.get('executive_summary', 'No summary available.')}</div>", 
+                unsafe_allow_html=True)
+    
     # Key Metrics
-    km = analysis.get("key_metrics", {})
-    if km:
+    if analysis.get("key_metrics"):
         st.markdown("### 📊 Key Metrics")
-        cols = st.columns(min(len(km), 4))
-        for i, (metric, value) in enumerate(km.items()):
-            cols[i % len(cols)].metric(metric, value)
-
+        metrics = analysis["key_metrics"]
+        cols = st.columns(min(len(metrics), 4))
+        for i, (metric, value) in enumerate(metrics.items()):
+            cols[i % 4].metric(metric, value)
+    
     # Insights
-    ins = analysis.get("insights", [])
-    if ins:
+    if analysis.get("insights"):
         st.markdown("### 💡 Key Insights")
-        for insight in ins:
+        for insight in analysis["insights"]:
             with st.expander(f"🔍 {insight.get('title', 'Insight')}"):
-                st.markdown(f"**Description**: {insight.get('description', '')}")
-                st.markdown(f"**Impact**: {insight.get('impact', '')}")
+                st.markdown(f"**Description:** {insight.get('description', '')}")
+                st.markdown(f"**Business Impact:** {insight.get('impact', '')}")
                 if insight.get('data_support'):
-                    st.markdown(f"**Data Support**: {insight.get('data_support')}")
-
+                    st.markdown(f"**Supporting Data:** {insight.get('data_support')}")
+    
     # Recommendations
-    recs = analysis.get("recommendations", [])
-    if recs:
-        st.markdown("### 🎯 Recommendations")
-        for rec in recs:
-            st.success(f"**{rec.get('title', 'Recommendation')}**: {rec.get('description', '')}")
-            if rec.get('expected_impact'):
-                st.caption(f"Expected impact: {rec.get('expected_impact')}")
-
-    # Follow-ups
-    fqs = analysis.get("followup_questions", [])
-    if fqs:
-        st.markdown("### 🔎 Suggested Follow-ups")
-        for i, question in enumerate(fqs):
-            if st.button(question, key=f"followup_{i}"):
+    if analysis.get("recommendations"):
+        st.markdown("### 🎯 Strategic Recommendations")
+        for i, rec in enumerate(analysis["recommendations"]):
+            st.markdown(f"<div class='recommendation-card'><strong>{rec.get('title', 'Recommendation')}</strong><br>{rec.get('description', '')}<br><em>Expected Impact: {rec.get('expected_impact', '')}</em></div>", 
+                       unsafe_allow_html=True)
+    
+    # Follow-up Questions
+    if analysis.get("followup_questions"):
+        st.markdown("### 🔍 Suggested Follow-up Questions")
+        cols = st.columns(2)
+        for i, question in enumerate(analysis["followup_questions"]):
+            if cols[i % 2].button(f"📊 {question}", key=f"followup_{hash(question)}_{i}"):
                 st.session_state.auto_q = question
                 st.rerun()
 
-def make_excel_download(df: pd.DataFrame, analysis: dict, sql: str) -> BytesIO:
-    """Create a multi-sheet Excel with data + analysis + metadata."""
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Executive_Report')
-
-        # Analysis summary
-        if analysis:
-            analysis_data = []
-            for section in ["executive_summary", "key_metrics", "insights", "recommendations"]:
-                if section in analysis:
-                    if section == "key_metrics":
-                        for k, v in analysis[section].items():
-                            analysis_data.append({"Section": section, "Content": f"{k}: {v}"})
-                    elif section in ("insights", "recommendations"):
-                        for item in analysis[section]:
-                            analysis_data.append({"Section": section, "Content": str(item)})
-                    else:
-                        analysis_data.append({"Section": section, "Content": analysis[section]})
-            pd.DataFrame(analysis_data).to_excel(writer, index=False, sheet_name='Analysis_Summary')
-
-        meta = pd.DataFrame({
-            'Metric': ['Total Rows', 'Total Columns', 'Export Date', 'SQL'],
-            'Value': [len(df), len(df.columns),
-                      datetime.now().strftime("%Y-%m-%d %H:%M"),
-                      sql[:32000]]
-        })
-        meta.to_excel(writer, index=False, sheet_name='Metadata')
-    output.seek(0)
-    return output
+# =========================
+# SESSION STATE INITIALIZATION
+# =========================
+if "chat_history" not in st.session_state: 
+    st.session_state.chat_history = []
+if "analysis_history" not in st.session_state: 
+    st.session_state.analysis_history = []
+if "auto_q" not in st.session_state: 
+    st.session_state.auto_q = None
 
 # =========================
 # SIDEBAR
 # =========================
 with st.sidebar:
     st.markdown("<div class='metric-card'>📊 Executive Dashboard</div>", unsafe_allow_html=True)
-
-    # DB health + rolling revenue
+    
+    # Connection status
     with engine.connect() as conn:
         try:
             count = conn.execute(text("""
-                SELECT COUNT(*) FROM voylla."voylla_design_ai"
+                SELECT COUNT(*) FROM voylla."voylla_design_ai" 
                 WHERE "Sale Order Item Status" != 'CANCELLED'
             """)).scalar()
             revenue = conn.execute(text("""
-                SELECT SUM("Amount") FROM voylla."voylla_design_ai"
+                SELECT SUM("Amount") FROM voylla."voylla_design_ai" 
                 WHERE "Sale Order Item Status" != 'CANCELLED'
                 AND "Date" >= CURRENT_DATE - INTERVAL '30 days'
             """)).scalar()
@@ -553,146 +496,218 @@ with st.sidebar:
             st.metric("30-Day Revenue", f"₹{revenue:,.2f}" if revenue else "N/A")
         except Exception as e:
             st.error(f"❌ Connection issue: {e}")
-
+    
     st.markdown("---")
-    st.header("⚙️ Options")
-    st.checkbox("⚡ Quick Analysis (no LLM)", key="quick_mode", value=True,
-                help="Faster & deterministic. Turn off to use the LLM for deeper narrative analysis.")
-
-    st.markdown("---")
-    st.header("💡 Executive Questions")
+    
+    # Preset questions
+    st.header("💡 Quick Analysis")
     presets = [
-        "Show me top 10 products by revenue this quarter",
-        "What are our best performing channels by growth rate?",
-        "Compare this year's revenue to last year by month",
-        "Which design styles have the highest average order value?",
-        "Show me channel-wise revenue and units this month",
-        "Analyze sales trends by metal color and design style",
-        "What is our profit margin by product category?",
-        "Identify seasonal patterns in our sales data"
+        "Show top 10 channels by revenue this month",
+        "Compare design styles performance year over year", 
+        "Analyze profit margins by metal color",
+        "What are seasonal sales patterns?",
+        "Which products have highest average order value?",
+        "Show revenue trends for last 6 months",
+        "Compare channel performance quarter by quarter",
+        "Identify best performing product combinations"
     ]
+    
     for q in presets:
         if st.button(f"• {q}", key=f"preset_{hash(q)}"):
             st.session_state["auto_q"] = q
             st.rerun()
-
+    
     st.markdown("---")
+    
+    # Controls
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🗑️ Clear All", use_container_width=True):
-            st.session_state.chat = []
-            st.session_state.results = []
-            st.session_state.auto_q = None
-            memory.clear()
+            st.session_state.chat_history = []
+            st.session_state.analysis_history = []
+            st.session_state.conversation_memory.clear()
             st.rerun()
+    
     with col2:
-        st.caption("Advanced AI • Context-aware • Executive Insights")
+        show_history = st.checkbox("Show History", value=True)
 
 # =========================
-# SESSION STATE
-# =========================
-if "chat" not in st.session_state: st.session_state.chat = []
-if "auto_q" not in st.session_state: st.session_state.auto_q = None
-# Persistent RESULTS HISTORY: list of dicts {question, sql, df, analysis, ts}
-if "results" not in st.session_state: st.session_state.results = []
-
-# =========================
-# HEADER
+# MAIN INTERFACE
 # =========================
 st.markdown("<div class='main-header'>Voylla DesignGPT Executive Dashboard</div>", unsafe_allow_html=True)
-st.caption("AI-Powered Design Intelligence and Sales Analytics — Results persist across questions")
+st.caption("AI-Powered Design Intelligence & Sales Analytics — Persistent Analysis History")
 
-# Render prior chat (lightweight)
-for m in st.session_state.chat[-12:]:
-    with st.chat_message(m["role"]):
-        st.markdown(m["content"])
+# Display conversation history
+if show_history and st.session_state.analysis_history:
+    st.markdown("### 📚 Analysis History")
+    
+    # Show recent analyses in expandable sections
+    for i, item in enumerate(reversed(st.session_state.analysis_history[-5:])):  # Show last 5
+        with st.expander(f"Q{len(st.session_state.analysis_history)-i}: {item['question'][:80]}..."):
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                display_analysis(item['analysis'])
+            
+            with col2:
+                if item['visualizations']:
+                    st.markdown("#### 📈 Charts")
+                    for viz in item['visualizations']:
+                        st.plotly_chart(viz, use_container_width=True)
+                
+                if not item['data'].empty:
+                    st.markdown("#### 📋 Data")
+                    st.dataframe(item['data'].head(), use_container_width=True)
+                    
+                    # Quick export
+                    csv = item['data'].to_csv(index=False)
+                    st.download_button(
+                        "💾 Export CSV",
+                        data=csv,
+                        file_name=f"analysis_{i}.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
 
-# Always-visible input (keeps mobile keyboard)
-inp = st.chat_input("Ask an executive question about sales or design trends…", key="chat_box")
+# Chat input
+inp = st.chat_input("Ask any question about sales, design trends, or business performance...", key="main_input")
+
+# Handle auto questions
 if st.session_state.auto_q:
     inp = st.session_state.auto_q
     st.session_state.auto_q = None
 
-# =========================
-# RUN PIPELINE
-# =========================
 if inp:
-    st.session_state.chat.append({"role": "user", "content": inp})
-    with st.chat_message("user"):
-        st.markdown(inp)
-
-    with st.spinner("Conducting analysis… 💎"):
+    st.markdown("---")
+    st.markdown(f"### 🤔 Question: {inp}")
+    
+    with st.spinner("🔍 Analyzing data and generating insights..."):
         try:
-            # 1) Generate + run SQL (with auto-refine on error)
-            df, sql = generate_and_run_sql(inp, st.session_state.chat)
-
-            # 2) Analysis (fast or LLM)
-            if st.session_state.get("quick_mode", True):
-                analysis = analyze_data_fast(df, inp)
-            else:
-                analysis = analyze_data_llm(df, inp, st.session_state.chat)
-
-            # 3) Save to memory + results history (PERSIST)
-            memory.save_context({"input": inp}, {"output": f"Analysis ready: {analysis.get('executive_summary', '')}"})
-            st.session_state.results.append({
-                "question": inp,
-                "sql": sql,
-                "df": df,
-                "analysis": analysis,
-                "ts": datetime.now().strftime("%Y-%m-%d %H:%M")
-            })
-        except Exception as e:
-            err = f"⚠️ Could not complete request: {e}"
-            st.session_state.chat.append({"role": "assistant", "content": err})
-            st.error(err)
-
-# =========================
-# RENDER ALL RUNS (PERSISTENT)
-# =========================
-# Newest first
-for i, res in enumerate(reversed(st.session_state.results)):
-    idx = len(st.session_state.results) - 1 - i  # original index
-    with st.container(border=True):
-        st.subheader(f"Run #{idx + 1} • {res['ts']}")
-        st.markdown(f"**Question:** {res['question']}")
-
-        # Analysis section
-        with st.chat_message("assistant"):
-            display_analysis(res["analysis"])
-
-        # Show SQL (collapsible)
-        with st.expander("View generated SQL"):
-            st.code(res["sql"], language="sql")
-
-        # Visualizations
-        if res["df"] is not None and not res["df"].empty:
-            st.markdown("#### 📈 Visualizations")
-            figs = create_advanced_visualizations(res["df"])
-            if figs:
-                cols = st.columns(2)
-                for j, fig in enumerate(figs):
-                    cols[j % 2].plotly_chart(fig, use_container_width=True)
-
-            st.markdown("#### 📋 Data Preview")
-            st.dataframe(res["df"], use_container_width=True, height=360)
-
-            # Per-run Excel download
-            excel_buf = make_excel_download(res["df"], res["analysis"], res["sql"])
-            ts = datetime.now().strftime("%Y%m%d_%H%M")
-            st.download_button(
-                "💾 Download Executive Report (this run)",
-                data=excel_buf.getvalue(),
-                file_name=f"voylla_executive_report_run{idx+1}_{ts}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key=f"download_exec_{idx}_{ts}"
+            # Generate SQL
+            sql = generate_sql(inp, st.session_state.chat_history)
+            
+            # Execute query
+            df = run_sql_to_df(sql)
+            
+            # Perform analysis
+            analysis = analyze_data_improved(df, inp, st.session_state.chat_history)
+            
+            # Create visualizations
+            visualizations = create_smart_visualizations(df, analysis, inp)
+            
+            # Store in history
+            analysis_item = {
+                'question': inp,
+                'sql': sql,
+                'data': df,
+                'analysis': analysis,
+                'visualizations': visualizations,
+                'timestamp': datetime.now()
+            }
+            st.session_state.analysis_history.append(analysis_item)
+            
+            # Add to chat history
+            st.session_state.chat_history.append({"role": "user", "content": inp})
+            st.session_state.chat_history.append({"role": "assistant", "content": analysis.get("executive_summary", "Analysis completed")})
+            
+            # Update memory
+            memory.save_context(
+                {"input": inp}, 
+                {"output": f"Generated SQL and analyzed {len(df)} records. Key insight: {analysis.get('executive_summary', '')[:100]}"}
             )
+            
+        except Exception as e:
+            st.error(f"❌ Analysis Error: {str(e)}")
+            st.stop()
+    
+    # Display current analysis
+    st.markdown("### 📊 Current Analysis")
+    
+    # Create layout
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        display_analysis(analysis)
+    
+    with col2:
+        # Show SQL
+        with st.expander("🔍 Generated SQL"):
+            st.code(sql, language="sql")
+        
+        # Quick stats
+        if not df.empty:
+            st.markdown("#### 📈 Quick Stats")
+            st.info(f"**Records:** {len(df):,}\n\n**Columns:** {len(df.columns)}")
+    
+    # Visualizations
+    if visualizations:
+        st.markdown("### 📈 Data Visualizations")
+        
+        # Display in grid
+        if len(visualizations) == 1:
+            st.plotly_chart(visualizations[0], use_container_width=True)
+        elif len(visualizations) == 2:
+            col1, col2 = st.columns(2)
+            col1.plotly_chart(visualizations[0], use_container_width=True)
+            col2.plotly_chart(visualizations[1], use_container_width=True)
+        else:
+            for i in range(0, len(visualizations), 2):
+                cols = st.columns(2)
+                for j, viz in enumerate(visualizations[i:i+2]):
+                    cols[j].plotly_chart(viz, use_container_width=True)
+    
+    # Data table
+    if not df.empty:
+        st.markdown("### 📋 Data Table")
+        st.dataframe(df, use_container_width=True, height=400)
+        
+        # Export options
+        st.markdown("### 💾 Export Options")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            csv = df.to_csv(index=False)
+            st.download_button(
+                "📄 Download CSV",
+                data=csv,
+                file_name=f"voylla_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        
+        with col2:
+            # Excel export with analysis
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df.to_excel(writer, sheet_name='Data', index=False)
+                
+                # Add analysis sheet
+                analysis_df = pd.DataFrame([
+                    ['Question', inp],
+                    ['Executive Summary', analysis.get('executive_summary', '')],
+                    ['Total Records', len(df)],
+                    ['Generated SQL', sql]
+                ], columns=['Field', 'Value'])
+                analysis_df.to_excel(writer, sheet_name='Analysis', index=False)
+            
+            output.seek(0)
+            st.download_button(
+                "📊 Download Excel",
+                data=output.getvalue(),
+                file_name=f"voylla_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        
+        with col3:
+            st.info(f"**{len(df):,}** records analyzed")
 
+# Footer
 st.markdown("---")
 st.markdown("""
-<div style='text-align:center;color:#666;font-size:.9em;'>
-💡 <b>Executive Tips:</b> Ask about trends, comparisons, performance metrics, and growth opportunities •
-Use terms like "YoY", "QoQ", "trending", "best performing" •
-Try "analyze profitability by design style" or "show me seasonal trends" for advanced insights.
+<div style='text-align: center; color: #666; font-size: 0.9em; padding: 20px;'>
+💎 <strong>Voylla DesignGPT</strong> | Advanced Business Intelligence<br>
+💡 <em>Tips:</em> Ask about trends, comparisons, profitability, seasonal patterns, or growth opportunities<br>
+🔄 All previous analyses are preserved above for reference and comparison
 </div>
 """, unsafe_allow_html=True)
