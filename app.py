@@ -33,6 +33,11 @@ from io import BytesIO
 import plotly.express as px
 from datetime import datetime
 from typing import List, Optional
+import time
+from openai import OpenAI, RateLimitError, APIError, APIConnectionError, BadRequestError
+
+client = OpenAI(api_key=OPENAI_API_KEY)
+
 
 # -------------------------
 # CONFIG
@@ -71,26 +76,27 @@ def strip_codefence(text: str) -> str:
     return text.strip()
 
 
-def call_openai_chat(messages: List[dict], max_tokens: int = 1500, stop: Optional[List[str]] = None) -> str:
+
+def call_openai_chat(messages: list, max_tokens: int = 1500) -> str:
     """Call OpenAI ChatCompletion and return the assistant content."""
     for attempt in range(3):
         try:
-            resp = openai.ChatCompletion.create(
+            resp = client.chat.completions.create(
                 model=MODEL_NAME,
                 messages=messages,
                 temperature=LLM_TEMPERATURE,
                 max_tokens=max_tokens,
             )
-            return resp['choices'][0]['message']['content']
+            return resp.choices[0].message.content
         except RateLimitError:
             wait = 2 ** attempt
             time.sleep(wait)
-        except OpenAIError as e:
-            # Raise after final attempt
+        except (APIError, APIConnectionError, BadRequestError) as e:
             if attempt == 2:
                 raise
             time.sleep(1)
     raise RuntimeError("OpenAI request failed after retries")
+
 
 
 # -------------------------
