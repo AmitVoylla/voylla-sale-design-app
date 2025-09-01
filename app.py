@@ -166,7 +166,7 @@ RESULTS PREVIEW (CSV):
 
 def auto_chart(df: pd.DataFrame):
     # pick a sensible default: first object column as x, largest numeric as y
-    if df.empty: 
+    if df.empty:
         return None
     num_cols = df.select_dtypes(include=["number"]).columns.tolist()
     cat_cols = df.select_dtypes(exclude=["number"]).columns.tolist()
@@ -223,6 +223,7 @@ with st.sidebar:
         if st.button("🗑️ Clear Chat", use_container_width=True):
             st.session_state.chat = []
             st.session_state["last_df"] = None
+            st.session_state["last_sql"] = ""
             st.rerun()
     with col2:
         st.caption("Agent-free • stable • no verbose logs")
@@ -244,7 +245,7 @@ st.caption("AI-Powered Design Intelligence and Sales Analytics — agent-free & 
 # Render history
 for m in st.session_state.chat:
     with st.chat_message(m["role"]):
-        st.markdown(m["content"] if m["role"]=="assistant" else m["content"])
+        st.markdown(m["content"])
 
 # Always-visible input (keeps mobile keyboard)
 inp = st.chat_input("Ask an executive question about sales or design trends…", key="chat_box")
@@ -273,6 +274,10 @@ if inp:
         if summary:
             st.markdown(f"<div class='assistant-message'>{summary}</div>", unsafe_allow_html=True)
 
+    # NEW: persist assistant message so it survives reruns (e.g. after download)
+    if summary:
+        st.session_state.chat.append({"role": "assistant", "content": summary})  # NEW
+
     # Show SQL (collapsible)
     with st.expander("View generated SQL"):
         st.code(st.session_state.last_sql, language="sql")
@@ -298,9 +303,12 @@ if st.session_state.last_df is not None and not st.session_state.last_df.empty:
             'Metric': ['Total Rows', 'Total Columns', 'Export Date', 'SQL'],
             'Value': [len(export_df), len(export_df.columns),
                       datetime.now().strftime("%Y-%m-%d %H:%M"),
-                      st.session_state.last_sql[:32000]]  # include SQL for audit
+                      st.session_state.last_sql[:32000]]
         })
         meta.to_excel(writer, index=False, sheet_name='Summary')
+
+    # NEW: reset buffer before passing to download_button so data is served correctly after rerun
+    output.seek(0)  # NEW
 
     ts = datetime.now().strftime("%Y%m%d_%H%M")
     st.download_button(
