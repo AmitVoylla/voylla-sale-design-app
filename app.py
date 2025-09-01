@@ -29,7 +29,7 @@ st.set_page_config(
 )
 
 # Model configuration
-MODEL_NAME = "gpt-4"  # More capable model for complex analysis
+MODEL_NAME = "gpt-4.1-mini"  # More capable model for complex analysis
 LLM_TEMPERATURE = 0.1
 
 # =========================
