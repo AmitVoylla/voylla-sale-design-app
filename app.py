@@ -585,9 +585,24 @@ Remember: You are speaking to company executives. Be insightful, professional, a
                 st.dataframe(df_res, use_container_width=True)
 
 # ---------- Enhanced download functionality ----------
+# if st.session_state.last_df is not None and not st.session_state.last_df.empty:
+#     st.markdown("---")
+#     st.subheader("📥 Export Results")
+
 if st.session_state.last_df is not None and not st.session_state.last_df.empty:
-    st.markdown("---")
-    st.subheader("📥 Export Results")
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        st.session_state.last_df.to_excel(writer, index=False, sheet_name='Executive_Report')
+        # Additional summary sheet code...
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    st.download_button(
+        "💾 Download Executive Report",
+        data=output.getvalue(),
+        file_name=f"voylla_executive_report_{timestamp}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
     
     col1, col2, col3 = st.columns([1, 1, 2])
     
