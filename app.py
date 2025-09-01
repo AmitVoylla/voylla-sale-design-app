@@ -1,146 +1,155 @@
 #!/usr/bin/env python
 # coding: utf-8
+
 import streamlit as st
 from langchain_openai import ChatOpenAI
+from langchain_community.utilities.sql_database import SQLDatabase
+from langchain_community.agent_toolkits.sql.base import create_sql_agent
+from langchain_community.agent_toolkits.sql.toolkit import SQLDatabaseToolkit
+from langchain.memory import ConversationBufferWindowMemory
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
-import os, re, time
+import os
 import pandas as pd
 from io import BytesIO
+import re
+import random
 import plotly.express as px
-from datetime import datetime
+import plotly.graph_objects as go
+from datetime import datetime, timedelta
+import time
 
-# =========================
-# CONFIG
-# =========================
-st.set_page_config(
-    page_title="Voylla DesignGPT - Executive Dashboard",
-    page_icon="💎",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+# ---------- Enhanced spinner messages -----------
+TEMPLATES_FILE = "voylla_about_templates_attractive.txt"
+if os.path.exists(TEMPLATES_FILE):
+    with open(TEMPLATES_FILE, "r", encoding="utf-8") as file:
+        lines = [line.strip().split('. ', 1)[1] for line in file if '. ' in line]
+else:
+    lines = [
+        "Crunching the numbers with a sparkle ✨",
+        "Polishing your insights… 💎",
+        "Setting the stones in your report…",
+        "Crafting your jewelry analytics… 💍",
+        "Mining data gems for you… ⛏️",
+        "Designing your perfect answer… ✨",
+    ]
 
-# Minimal, stable model for deterministic SQL text output
-MODEL_NAME = "gpt-4o-mini"   # Fixed model name
-LLM_TEMPERATURE = 0.1
-
-# =========================
-# STYLES
-# =========================
-st.markdown("""
-<style>
-.stApp { background-color: #f8f9fa; color: #212529; }
-.main-header { font-size: 2.2rem; color: #4a4a4a; font-weight: 700; margin-bottom: .25rem; }
-.metric-card {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    padding: 1.0rem; border-radius: 12px; color: white; text-align: center; margin: .5rem 0;
-    box-shadow: 0 4px 6px rgba(0,0,0,.1);
-}
-.executive-summary {
-    background-color: white; border-radius: 12px; padding: 1.2rem; box-shadow: 0 4px 6px rgba(0,0,0,.05);
-    margin-bottom: 1.2rem; border-left: 4px solid #764ba2;
-}
-.assistant-message { 
-    background-color: #f8f9fa; border-radius: 12px; padding: 1rem; 
-    border-left: 4px solid #667eea; margin: 1rem 0;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# =========================
-# KEYS & CONNECTIONS
-# =========================
+# ---------- Enhanced secrets handling ----------
 load_dotenv()
-
-# Initialize session state for chat history
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-
 api_key = os.getenv("OPENAI_API_KEY")
 if not api_key:
-    try:
-        api_key = st.secrets["OPENAI_API_KEY"]
-    except:
-        st.error("🔑 No OpenAI key found – please add it to your app Secrets or .env")
-        st.stop()
+    st.error("🔑 No OpenAI key found – please add it in your app's Secrets.")
+    st.stop()
 
 os.environ["OPENAI_API_KEY"] = api_key
 
+# ---------- LLM with error recovery ----------
 @st.cache_resource
 def get_llm():
-    return ChatOpenAI(model=MODEL_NAME, temperature=LLM_TEMPERATURE, request_timeout=60, max_retries=3)
+    return ChatOpenAI(model="gpt-4.1-mini", temperature=0.1, request_timeout=60, max_retries=3)
 
 llm = get_llm()
 
+# ---------- Enhanced DB CONNECTION with caching and retries ----------
 @st.cache_resource
-def get_engine_and_schema():
-    """Create engine and return schema string for the single allowed table."""
-    try:
-        # Try secrets first, then environment variables
+def get_database_connection():
+    max_retries = 3
+    retry_delay = 2  # seconds
+    
+    for attempt in range(max_retries):
         try:
             db_host = st.secrets["DB_HOST"]
             db_port = st.secrets["DB_PORT"]
             db_name = st.secrets["DB_NAME"]
             db_user = st.secrets["DB_USER"]
             db_password = st.secrets["DB_PASSWORD"]
-        except:
-            db_host = os.getenv("DB_HOST")
-            db_port = os.getenv("DB_PORT")
-            db_name = os.getenv("DB_NAME")
-            db_user = os.getenv("DB_USER")
-            db_password = os.getenv("DB_PASSWORD")
-            
-        if not all([db_host, db_port, db_name, db_user, db_password]):
-            raise ValueError("Missing database configuration")
-            
-    except Exception as e:
-        st.error("❌ Missing DB configuration. Please add DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD.")
-        st.stop()
 
-    engine = create_engine(
-        f"postgresql+psycopg2://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}",
-        pool_pre_ping=True, pool_recycle=3600, pool_size=5, max_overflow=10
-    )
-    
-    # Smoke test
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-    except Exception as e:
-        st.error(f"❌ Database connection failed: {e}")
-        st.stop()
+            engine = create_engine(
+                f"postgresql+psycopg2://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}",
+                pool_pre_ping=True,
+                pool_recycle=3600,
+                pool_size=5,
+                max_overflow=10
+            )
+            
+            # Test connection with proper SQLAlchemy text() function
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            
+            db = SQLDatabase(
+                engine,
+                include_tables=["voylla_design_ai"],
+                schema="voylla"
+            )
+            return db
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
+            st.error(f"Database connection failed after {max_retries} attempts: {str(e)}")
+            st.stop()
 
-    # Build schema doc from information_schema for the allowed table
-    schema_rows = []
-    q = """
-        SELECT column_name, data_type
-        FROM information_schema.columns
-        WHERE table_schema='voylla' AND table_name='voylla_design_ai'
-        ORDER BY ordinal_position
-    """
-    try:
-        with engine.connect() as conn:
-            rows = conn.execute(text(q)).fetchall()
-            for c, t in rows:
-                schema_rows.append(f'- "{c}" ({t})')
-    except Exception as e:
-        st.error(f"❌ Could not fetch schema: {e}")
-        st.stop()
-    
-    if not schema_rows:
-        st.error("❌ Table voylla.voylla_design_ai not found or empty")
-        st.stop()
+db = get_database_connection()
+
+# ---------- Enhanced markdown parser ----------
+def markdown_to_dataframe(markdown_text: str):
+    """Parse a markdown table into a DataFrame with better error handling."""
+    if not markdown_text or '|' not in markdown_text:
+        return None
         
-    schema_string = "Table: voylla.\"voylla_design_ai\" (read-only)\n" + "\n".join(schema_rows)
-    return engine, schema_string
+    lines = [line.strip() for line in markdown_text.splitlines() if line.strip()]
+    
+    # Find the table header and separator
+    table_start = None
+    for i, line in enumerate(lines):
+        if '|' in line and i+1 < len(lines) and re.match(r'^[\s\|:-]+$', lines[i+1]):
+            table_start = i
+            break
+    
+    if table_start is None:
+        return None
+    
+    # Extract table rows
+    table_lines = []
+    for i in range(table_start, len(lines)):
+        line = lines[i]
+        if '|' in line and not re.match(r'^[\s\|:-]+$', line):
+            table_lines.append(line)
+        elif len(table_lines) > 0:
+            break
+    
+    if len(table_lines) < 2:
+        return None
+    
+    # Clean and normalize the table
+    cleaned_lines = []
+    for line in table_lines:
+        # Ensure proper pipe formatting
+        if not line.startswith('|'):
+            line = '|' + line
+        if not line.endswith('|'):
+            line = line + '|'
+        cleaned_lines.append(line)
+    
+    # Convert to DataFrame
+    try:
+        from io import StringIO
+        df = pd.read_csv(StringIO("\n".join(cleaned_lines)), sep="|", skipinitialspace=True)
+        df = df.dropna(axis=1, how='all')  # Remove empty columns
+        df = df.loc[:, ~df.columns.str.contains('^Unnamed')]  # Remove unnamed columns
+        
+        # Clean column names and data
+        df.columns = df.columns.str.strip()
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                df[col] = df[col].astype(str).str.strip()
+        
+        return df
+    except Exception as e:
+        st.error(f"Table parsing error: {str(e)}")
+        return None
 
-engine, schema_doc = get_engine_and_schema()
-
-# =========================
-# HELPERS
-# =========================
-DANGEROUS = re.compile(r"\b(DROP|DELETE|UPDATE|INSERT|ALTER|TRUNCATE|CREATE|GRANT|REVOKE)\b", re.I)
-
+# ---------- Enhanced conversation context ----------
 def get_conversation_context():
     """Build enhanced conversation context with better formatting."""
     if not st.session_state.chat_history:
@@ -157,391 +166,471 @@ def get_conversation_context():
     
     return "\n".join(context_parts)
 
-def should_show_chart(question: str, df: pd.DataFrame) -> bool:
-    """Determine if a chart would be appropriate for the question and data."""
-    if df.empty or len(df) < 2:
-        return False
+# ---------- Chart generation helper ----------
+def create_chart_from_dataframe(df, chart_type="auto"):
+    """Create appropriate charts based on DataFrame structure."""
+    if df is None or df.empty:
+        return None
     
-    # Keywords that suggest visualization would be helpful
-    chart_keywords = [
-        'trend', 'compare', 'comparison', 'growth', 'over time', 'by month', 'by year',
-        'top', 'ranking', 'performance', 'distribution', 'analysis', 'breakdown',
-        'versus', 'vs', 'chart', 'graph', 'visualize', 'show me'
-    ]
+    # Clean column names
+    df.columns = df.columns.str.strip()
     
-    # Keywords that suggest no chart needed
-    no_chart_keywords = [
-        'count', 'total', 'sum', 'average', 'mean', 'specific', 'exact',
-        'list all', 'show all', 'details', 'information about'
-    ]
+    # Detect numeric columns
+    numeric_cols = df.select_dtypes(include=['int64', 'float64', 'int32', 'float32']).columns.tolist()
+    categorical_cols = df.select_dtypes(include=['object', 'string']).columns.tolist()
     
-    question_lower = question.lower()
+    if len(numeric_cols) == 0:
+        return None
     
-    # If explicitly asking for no visualization
-    for keyword in no_chart_keywords:
-        if keyword in question_lower and not any(ck in question_lower for ck in chart_keywords):
-            return False
+    # Auto-detect best chart type
+    if chart_type == "auto":
+        if len(categorical_cols) >= 1 and len(numeric_cols) >= 1:
+            if len(df) <= 15:
+                chart_type = "bar"
+            else:
+                chart_type = "line"
+        elif len(numeric_cols) >= 2:
+            chart_type = "scatter"
+        else:
+            chart_type = "line"
     
-    # If asking for visualization or comparative analysis
-    for keyword in chart_keywords:
-        if keyword in question_lower:
-            return True
-    
-    # Check data characteristics
-    numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
-    categorical_cols = df.select_dtypes(exclude=['number']).columns.tolist()
-    
-    # Need at least one numeric column for meaningful charts
-    if not numeric_cols:
-        return False
-    
-    # If we have good categorical data and the result isn't too large
-    if categorical_cols and len(df) <= 50:
-        return True
-    
-    return False
-
-def should_show_table(question: str, df: pd.DataFrame) -> bool:
-    """Determine if showing the full table would be appropriate."""
-    if df.empty:
-        return False
-    
-    # Always show table for small results
-    if len(df) <= 10:
-        return True
-    
-    # Keywords that suggest detailed tabular data is needed
-    table_keywords = [
-        'list', 'show all', 'details', 'breakdown', 'individual', 'each',
-        'specific', 'exact', 'complete', 'full'
-    ]
-    
-    # Keywords that suggest summary is enough
-    summary_keywords = [
-        'total', 'sum', 'count', 'average', 'mean', 'trend', 'growth',
-        'top 5', 'top 10', 'summary', 'overview'
-    ]
-    
-    question_lower = question.lower()
-    
-    # If asking for summary-level info, limit table size
-    for keyword in summary_keywords:
-        if keyword in question_lower:
-            return len(df) <= 20
-    
-    # If asking for detailed info, show more
-    for keyword in table_keywords:
-        if keyword in question_lower:
-            return len(df) <= 100
-    
-    # Default: show table if reasonable size
-    return len(df) <= 25
-
-def make_sql_prompt(question: str, schema_text: str) -> str:
-    conversation_context = get_conversation_context()
-    
-    return f"""
-You are a senior data analyst. Return a single **valid PostgreSQL** SELECT query for the question.
-
-STRICT RULES:
-- Read-only SELECT statements only.
-- Only use table voylla."voylla_design_ai".
-- Always filter out cancelled items: WHERE "Sale Order Item Status" != 'CANCELLED'.
-- If time period is vague (e.g., "this quarter", "last 6 months"), infer sensible filters using "Date".
-- Use double-quotes for all identifiers.
-- Do not add explanations, markdown, or fencing; output ONLY the SQL.
-- Limit results to reasonable sizes (use LIMIT when appropriate).
-
-{conversation_context}
-
-SCHEMA:
-{schema_text}
-
-QUESTION:
-{question}
-"""
-
-def generate_sql(question: str) -> str:
-    prompt = make_sql_prompt(question, schema_doc)
-    response = llm.invoke(prompt)
-    sql = response.content.strip()
-    
-    # Strip possible codefences if the model adds them
-    if sql.startswith("```"):
-        sql = re.sub(r"^```[a-zA-Z0-9]*", "", sql).strip()
-        sql = sql[:-3] if sql.endswith("```") else sql
-        sql = sql.strip()
-    
-    # Safety checks
-    if DANGEROUS.search(sql):
-        raise ValueError("Generated SQL contains a non read-only keyword.")
-    if "voylla_design_ai" not in sql:
-        raise ValueError("SQL must reference voylla.\"voylla_design_ai\".")
-    
-    return sql
-
-def run_sql_to_df(sql: str) -> pd.DataFrame:
     try:
-        with engine.connect() as conn:
-            return pd.read_sql_query(sql, conn)
+        if chart_type == "bar" and len(categorical_cols) >= 1 and len(numeric_cols) >= 1:
+            # For better visualization, limit to top 10 categories
+            if len(df) > 10:
+                top_df = df.nlargest(10, numeric_cols[0])
+            else:
+                top_df = df
+            
+            fig = px.bar(top_df, x=categorical_cols[0], y=numeric_cols[0], 
+                        title=f"{numeric_cols[0]} by {categorical_cols[0]}",
+                        color=numeric_cols[0], color_continuous_scale="viridis")
+            fig.update_layout(xaxis_tickangle=-45)
+            
+        elif chart_type == "line" and len(numeric_cols) >= 1:
+            # Try to find a date or sequential column
+            date_col = None
+            for col in df.columns:
+                if any(term in col.lower() for term in ['date', 'time', 'month', 'year', 'day']):
+                    date_col = col
+                    break
+            
+            if date_col and date_col in df.columns:
+                try:
+                    df_sorted = df.sort_values(by=date_col)
+                    fig = px.line(df_sorted, x=date_col, y=numeric_cols[0], 
+                                 title=f"Trend of {numeric_cols[0]} over time")
+                except:
+                    fig = px.line(df, y=numeric_cols[0], title=f"Trend of {numeric_cols[0]}")
+            else:
+                fig = px.line(df, y=numeric_cols[0], title=f"Trend of {numeric_cols[0]}")
+                
+        elif chart_type == "scatter" and len(numeric_cols) >= 2:
+            fig = px.scatter(df, x=numeric_cols[0], y=numeric_cols[1], 
+                           title=f"{numeric_cols[1]} vs {numeric_cols[0]}")
+        else:
+            return None
+            
+        fig.update_layout(height=400, showlegend=False)
+        return fig
     except Exception as e:
-        raise RuntimeError(f"SQL execution error: {e}")
+        st.error(f"Chart creation error: {str(e)}")
+        return None
 
-def summarize_for_executives(df: pd.DataFrame, user_q: str) -> str:
-    """Generate executive summary of the results."""
-    if df.empty:
-        return "No data found for the requested analysis."
+# ---------- Enhanced query validation and execution ----------
+def execute_safe_query(query):
+    """Execute SQL query with safety checks and error handling."""
+    # Safety checks - prevent any destructive operations
+    dangerous_keywords = ['drop', 'delete', 'update', 'insert', 'alter', 'truncate', 'create', 'grant', 'revoke']
+    if any(keyword in query.lower() for keyword in dangerous_keywords):
+        return "Error: Query contains potentially dangerous operations."
     
-    # Keep token-light by downsampling preview
-    preview_csv = df.head(50).to_csv(index=False)
+    try:
+        result = db.run(query)
+        return result
+    except Exception as e:
+        return f"Error executing query: {str(e)}"
+
+# ---------- Enhanced UI ----------
+st.set_page_config(
+    page_title="Voylla DesignGPT - Executive Dashboard",
+    page_icon="💎",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Enhanced styling for CEO presentation
+st.markdown("""
+<style>
+.stApp {
+    background-color: #f8f9fa;
+    color: #212529;
+}
+.main-header {
+    font-size: 2.5rem;
+    color: #4a4a4a;
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+}
+.stChatMessage .element-container div[data-testid="stMarkdownContainer"] {
+    color: #212529 !important;
+    font-size: 1rem;
+}
+.metric-card {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    padding: 1.2rem;
+    border-radius: 12px;
+    color: white;
+    text-align: center;
+    margin: 0.5rem 0;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+.executive-summary {
+    background-color: white;
+    border-radius: 12px;
+    padding: 1.5rem;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+    margin-bottom: 1.5rem;
+    border-left: 4px solid #764ba2;
+}
+.success-indicator {
+    color: #28a745;
+    font-weight: bold;
+}
+.warning-indicator {
+    color: #ffc107;
+    font-weight: bold;
+}
+.assistant-message {
+    background-color: #f8f9fa;
+    border-radius: 12px;
+    padding: 1rem;
+    border-left: 4px solid #667eea;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ---------- Initialize session state ----------
+for key in ["chat_history", "last_df", "last_query_result", "auto_question", "executive_mode"]:
+    if key not in st.session_state:
+        if key == "chat_history":
+            st.session_state[key] = []
+        elif key == "executive_mode":
+            st.session_state[key] = True
+        else:
+            st.session_state[key] = None
+
+# ---------- Enhanced Memory / Agent ----------
+if "memory" not in st.session_state:
+    st.session_state.memory = ConversationBufferWindowMemory(
+        memory_key="chat_history",
+        return_messages=True,
+        k=10
+    )
+
+if "agent_executor" not in st.session_state:
+    toolkit = SQLDatabaseToolkit(db=db, llm=llm)
+    st.session_state.agent_executor = create_sql_agent(
+        llm=llm,
+        toolkit=toolkit,
+        verbose=True,
+        handle_parsing_errors=True,
+        memory=st.session_state.memory,
+        max_iterations=15,
+        # early_stopping_method="generate",
+        agent_executor_kwargs={"handle_parsing_errors": True}
+    )
+
+# ---------- Enhanced Sidebar ----------
+with st.sidebar:
+    st.markdown("<div class='metric-card'>📊 Executive Dashboard</div>", unsafe_allow_html=True)
+    
+    # Add connection health check
+    try:
+        with st.spinner("Checking database connection..."):
+            result = db.run("SELECT COUNT(*) as total_records FROM voylla.\"voylla_design_ai\" WHERE \"Sale Order Item Status\" != 'CANCELLED'")
+            if result:
+                record_count = re.search(r'\d+', result)
+                if record_count:
+                    st.success(f"✅ Connected: {record_count.group(0)} active records")
+    except Exception as e:
+        st.error(f"❌ Connection issue: {str(e)}")
+    
+    st.markdown("---")
+    st.header("💡 Executive Questions")
+    
+    # Categorized sample questions for executive use
+    with st.expander("📈 Performance Overview", expanded=True):
+        executive_questions = [
+            "Show me top 10 products by revenue this quarter",
+            "What are our best performing channels by growth rate?",
+            "Compare this year's revenue to last year by month",
+            "What is our profit margin trend over the last 6 months?",
+            "Which design styles have the highest average order value?"
+        ]
+        for q in executive_questions:
+            if st.button(f"• {q}", key=f"exec_{hash(q)}"):
+                st.session_state.auto_question = q
+    
+    with st.expander("🎨 Design Intelligence"):
+        design_questions = [
+            "Which metal colors are trending this season?",
+            "What are the top 3 success combinations for wedding look?",
+            "How do traditional vs contemporary designs perform?",
+            "Show me the performance of different stone settings"
+        ]
+        for q in design_questions:
+            if st.button(f"• {q}", key=f"design_{hash(q)}"):
+                st.session_state.auto_question = q
+    
+    with st.expander("📊 Channel Analysis"):
+        channel_questions = [
+            "Compare AOV across all channels",
+            "Which designs perform best on each platform?",
+            "Show me channel growth rates over time"
+        ]
+        for q in channel_questions:
+            if st.button(f"• {q}", key=f"channel_{hash(q)}"):
+                st.session_state.auto_question = q
+    
+    st.markdown("---")
+    st.header("🔧 Settings")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🗑️ Clear Chat", use_container_width=True):
+            st.session_state.chat_history = []
+            st.session_state.memory.clear()
+            st.rerun()
+    
+    with col2:
+        st.session_state.executive_mode = st.checkbox("Executive Mode", value=True, key="exec_mode_check")
+    
+    st.markdown("---")
+    st.caption("Voylla DesignGPT v2.0 • Executive Edition")
+
+# ---------- Main Title and Header ----------
+st.markdown("<div class='main-header'>Voylla DesignGPT Executive Dashboard</div>", unsafe_allow_html=True)
+st.caption("AI-Powered Design Intelligence and Sales Analytics for Executive Decision Making")
+
+# Add executive summary if in executive mode
+if st.session_state.executive_mode and not st.session_state.chat_history:
+    st.markdown("""
+    <div class='executive-summary'>
+    <h3>📋 Executive Summary</h3>
+    <p>Welcome to Voylla's Executive Analytics Dashboard. This AI-powered tool provides:</p>
+    <ul>
+        <li>Real-time sales performance analytics</li>
+        <li>Design intelligence and trend analysis</li>
+        <li>Channel performance comparisons</li>
+        <li>Success combination identification</li>
+    </ul>
+    <p>Ask questions in natural language or use the sample questions in the sidebar to get started.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+# Add quick stats if available
+try:
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.markdown('<div class="metric-card">📊 Real-time Analytics</div>', unsafe_allow_html=True)
+    with col2:
+        st.markdown('<div class="metric-card">🎨 Design Intelligence</div>', unsafe_allow_html=True)
+    with col3:
+        st.markdown('<div class="metric-card">💎 Sales Insights</div>', unsafe_allow_html=True)
+    with col4:
+        st.markdown('<div class="metric-card">🚀 Growth Opportunities</div>', unsafe_allow_html=True)
+except:
+    pass
+
+# ---------- Render chat history ----------
+for message in st.session_state.chat_history:
+    with st.chat_message(message["role"]):
+        if message["role"] == "assistant" and st.session_state.executive_mode:
+            st.markdown(f"<div class='assistant-message'>{message['content']}</div>", unsafe_allow_html=True)
+        else:
+            st.markdown(message["content"])
+
+# ---------- Handle auto-generated questions ----------
+# if "auto_question" in st.session_state and st.session_state.auto_question:
+#     user_input = st.session_state.auto_question
+#     st.session_state.auto_question = None
+# else:
+#     user_input = st.chat_input("Ask an executive question about sales or design trends…")
+
+# ---------- Handle auto-generated questions (fixed to keep chat box visible) ----------
+
+# 1) Always render the chat input so the keyboard never disappears on mobile
+chat_prompt = "Ask an executive question about sales or design trends…"
+user_input = st.chat_input(chat_prompt, key="chat_box")
+
+# 2) If a sidebar button queued a question, process it this run
+if st.session_state.get("auto_question"):
+    # Use the queued question for this turn, but keep the chat box rendered
+    user_input = st.session_state.auto_question
+    st.session_state.auto_question = None  # clear the queue
+
+
+if user_input:
+    st.session_state.chat_history.append({"role": "user", "content": user_input})
+    
+    with st.chat_message("user"):
+        st.markdown(user_input)
+
+    # ---------- ENHANCED SYSTEM PROMPT FOR EXECUTIVE USE ----------
     conversation_context = get_conversation_context()
     
+    # Enhanced prompt with better context awareness for executive needs
     prompt = f"""
-You are Voylla DesignGPT Executive Edition, an expert analytics assistant for Voylla jewelry data analysis.
+You are Voylla DesignGPT Executive Edition, an expert SQL/analytics assistant for Voylla jewelry data analysis designed for executive use.
 
+# CONVERSATION CONTEXT
 {conversation_context}
 
 # EXECUTIVE REPORTING GUIDELINES
 - Focus on business insights, not just data
 - Highlight trends, opportunities, and risks
-- Compare performance metrics when possible
+- Compare performance metrics (YoY, MoM, QoQ)
 - Use clear, concise language appropriate for executives
-- Provide actionable recommendations when relevant
-- Format responses with proper markdown for readability
+- Provide actionable recommendations when possible
 
-# KEY BUSINESS METRICS
+# DATABASE SCHEMA: voylla."voylla_design_ai"
+
+## KEY COLUMNS FOR EXECUTIVE ANALYSIS
+### Business Metrics
+- "Date" (timestamp) — Transaction date
+- "Channel" (text) — Sales platform (Cloudtail, FLIPKART, MYNTRA, NYKAA, etc.)
+- "Sale Order Item Status" (text) — Filter with: WHERE "Sale Order Item Status" != 'CANCELLED'
+- "Qty" (integer) — Units sold
+- "Amount" (numeric) — Revenue (Qty × price)
+- "MRP" (numeric) — Maximum Retail Price
+- "Cost Price" (numeric) — Unit cost
+
+### Design Intelligence
+- "Design Style" (text) — Aesthetic (Tribal, Contemporary, Traditional/Ethnic, Minimalist)
+- "Form" (text) — Shape (Triangle, Stud, Hoop, Jhumka, Ear Cuff)
+- "Metal Color" (text) — Finish (Antique Silver, Yellow Gold, Rose Gold, Silver, Antique Gold, Oxidized Black)
+- "Look" (text) — Occasion/vibe (Oxidized, Everyday, Festive, Party, Wedding)
+- "Central Stone" (text) — Primary gemstone
+
+# MANDATORY FILTERS
+- Always exclude cancelled orders: WHERE "Sale Order Item Status" != 'CANCELLED'
+- For time-based questions, use appropriate date ranges
+- When comparing channels, ensure fair comparison by including only common time periods
+
+# EXECUTIVE METRICS
 - Revenue: SUM("Amount")
-- Units: SUM("Qty") 
-- Average Order Value: Revenue/Units
-- Profit Margin: (Revenue - Cost)/Revenue * 100
+- Units: SUM("Qty")
+- Average Order Value: SUM("Amount") / NULLIF(SUM("Qty"), 0)
+- Profit Margin: (SUM("Amount") - SUM("Cost Price" * "Qty")) / NULLIF(SUM("Amount"), 0) * 100
+- Growth Rate: Use LAG() function for period-over-period comparisons
 
-USER QUESTION: {user_q}
+# RESPONSE FORMATTING FOR EXECUTIVES
+1. Start with a concise executive summary of key findings
+2. Present data in clean, well-formatted markdown tables
+3. Highlight the most important insights in bold
+4. Include visualizations when appropriate (charts will be auto-generated)
+5. End with actionable recommendations or suggested next analyses
 
-DATA PREVIEW (CSV):
-{preview_csv}
+# CURRENT EXECUTIVE REQUEST
+{user_input}
 
-Provide a clear executive summary focusing on key insights and business implications.
+Remember: You are speaking to company executives. Be insightful, professional, and focused on business impact.
 """
-    
-    try:
-        response = llm.invoke(prompt)
-        return response.content.strip()
-    except Exception as e:
-        return f"Analysis completed. Found {len(df)} records. Please review the data table below for detailed results."
 
-def auto_chart(df: pd.DataFrame, question: str):
-    """Generate appropriate chart based on data and question context."""
-    if df.empty or not should_show_chart(question, df):
-        return None
+    # ---------- Enhanced execution with better error handling ----------
+    random_template = random.choice(lines)
     
-    num_cols = df.select_dtypes(include=["number"]).columns.tolist()
-    cat_cols = df.select_dtypes(exclude=["number"]).columns.tolist()
-    date_cols = [col for col in df.columns if 'date' in col.lower() or 'time' in col.lower()]
-    
-    if not num_cols:
-        return None
-    
-    try:
-        # Choose the most appropriate chart type
-        if date_cols and len(df) > 1:
-            # Time series chart
-            fig = px.line(df, x=date_cols[0], y=num_cols[0], 
-                         title=f"{num_cols[0]} Over Time")
-        elif cat_cols and len(df) <= 20:
-            # Bar chart for categorical data
-            work_df = df.copy()
-            if len(work_df) > 15:
-                work_df = work_df.nlargest(15, num_cols[0])
-            fig = px.bar(work_df, x=cat_cols[0], y=num_cols[0], 
-                        title=f"{num_cols[0]} by {cat_cols[0]}")
-            fig.update_xaxis(tickangle=45)
-        elif len(num_cols) >= 2 and len(df) <= 100:
-            # Scatter plot for correlation
-            fig = px.scatter(df, x=num_cols[0], y=num_cols[1], 
-                           title=f"{num_cols[1]} vs {num_cols[0]}")
-        else:
-            return None
-        
-        fig.update_layout(height=400, showlegend=False)
-        return fig
-        
-    except Exception as e:
-        return None
-
-# =========================
-# SIDEBAR
-# =========================
-with st.sidebar:
-    st.markdown("<div class='metric-card'>📊 Executive Dashboard</div>", unsafe_allow_html=True)
-    
-    # Connection status
-    try:
-        with engine.connect() as conn:
-            count = conn.execute(text("""
-                SELECT COUNT(*) FROM voylla."voylla_design_ai" 
-                WHERE "Sale Order Item Status" != 'CANCELLED'
-            """)).scalar()
-            st.success(f"✅ Connected: {count:,} active records")
-    except Exception as e:
-        st.error(f"❌ Connection issue: {e}")
-
-    st.markdown("---")
-    st.header("💡 Executive Questions")
-    
-    presets = [
-        "Show me top 10 products by revenue this quarter",
-        "What are our best performing channels by growth rate?", 
-        "Compare this year's revenue to last year by month",
-        "Which design styles have the highest average order value?",
-        "Show me channel-wise revenue and units this month"
-    ]
-    
-    for i, q in enumerate(presets):
-        if st.button(f"• {q}", key=f"preset_{i}"):
-            st.session_state["auto_q"] = q
-
-    st.markdown("---")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("🗑️ Clear Chat", use_container_width=True):
-            for key in ['chat', 'chat_history', 'last_df', 'last_sql', 'auto_q']:
-                if key in st.session_state:
-                    del st.session_state[key]
-            st.rerun()
-    
-    with col2:
-        st.caption("Agent-free • stable")
-
-# =========================
-# SESSION STATE
-# =========================
-if "chat" not in st.session_state: 
-    st.session_state.chat = []
-if "auto_q" not in st.session_state: 
-    st.session_state.auto_q = None
-if "last_df" not in st.session_state: 
-    st.session_state.last_df = None
-if "last_sql" not in st.session_state: 
-    st.session_state.last_sql = ""
-
-# =========================
-# MAIN INTERFACE
-# =========================
-st.markdown("<div class='main-header'>Voylla DesignGPT Executive Dashboard</div>", unsafe_allow_html=True)
-st.caption("AI-Powered Design Intelligence and Sales Analytics")
-
-# Render chat history
-for m in st.session_state.chat:
-    with st.chat_message(m["role"]):
-        st.markdown(m["content"])
-
-# Handle input
-inp = st.chat_input("Ask an executive question about sales or design trends…", key="chat_box")
-
-if st.session_state.auto_q:
-    inp = st.session_state.auto_q
-    st.session_state.auto_q = None
-
-if inp:
-    # Add to chat history
-    st.session_state.chat.append({"role": "user", "content": inp})
-    st.session_state.chat_history.append({"role": "user", "content": inp})
-    
-    with st.chat_message("user"):
-        st.markdown(inp)
-    
-    with st.spinner("Analyzing your request... 💎"):
+    with st.spinner(random_template.strip()):
         try:
-            # Generate and execute SQL
-            sql = generate_sql(inp)
-            df = run_sql_to_df(sql)
-            st.session_state.last_df = df
-            st.session_state.last_sql = sql
+            # Add a small delay to make the spinner more visible
+            time.sleep(0.5)
             
-            # Generate executive summary
-            summary = summarize_for_executives(df, inp)
+            response = st.session_state.agent_executor.run(prompt)
+            st.session_state.last_query_result = response
             
         except Exception as e:
-            summary = f"⚠️ Could not complete request: {str(e)}"
-            df = pd.DataFrame()
-    
-    # Display assistant response
-    with st.chat_message("assistant"):
-        if summary:
-            st.markdown(f"<div class='assistant-message'>{summary}</div>", unsafe_allow_html=True)
-    
-    # Add assistant response to chat history
-    if summary:
-        st.session_state.chat.append({"role": "assistant", "content": summary})
-        st.session_state.chat_history.append({"role": "assistant", "content": summary})
-    
-    # Show SQL (collapsible)
-    if st.session_state.last_sql:
-        with st.expander("🔍 View Generated SQL"):
-            st.code(st.session_state.last_sql, language="sql")
-    
-    # Show results conditionally
-    if not df.empty:
-        # Show table only if appropriate
-        if should_show_table(inp, df):
-            st.subheader("📋 Data Results")
-            if len(df) > 100:
-                st.info(f"Showing first 100 rows of {len(df)} total results")
-                st.dataframe(df.head(100), use_container_width=True)
+            error_msg = str(e)
+            if "rate limit" in error_msg.lower():
+                response = "⏱️ System is experiencing high demand. Please wait a moment and try again."
+            elif "connection" in error_msg.lower() or "timeout" in error_msg.lower():
+                response = "🔌 Database connection issue. Please try again in a moment."
+            elif "parsing" in error_msg.lower():
+                response = "I had trouble understanding that request. Could you please rephrase your question more specifically?"
             else:
-                st.dataframe(df, use_container_width=True)
-        
-        # Show chart only if appropriate  
-        fig = auto_chart(df, inp)
-        if fig:
-            st.subheader("📊 Data Visualization")
-            st.plotly_chart(fig, use_container_width=True)
+                response = f"I apologize, but I encountered an error processing your request. Please try again or rephrase your question. Error: {error_msg[:100]}..."
 
-# Export functionality
+    st.session_state.chat_history.append({"role": "assistant", "content": response})
+    
+    with st.chat_message("assistant"):
+        if st.session_state.executive_mode:
+            st.markdown(f"<div class='assistant-message'>{response}</div>", unsafe_allow_html=True)
+        else:
+            st.markdown(response)
+
+    # ---------- Enhanced table parsing and visualization ----------
+    df_res = markdown_to_dataframe(response)
+    if df_res is not None and not df_res.empty:
+        st.session_state.last_df = df_res
+        
+        # Auto-generate charts for executive mode
+        if st.session_state.executive_mode and len(df_res) > 1:
+            st.subheader("📊 Data Visualization")
+            chart = create_chart_from_dataframe(df_res)
+            if chart:
+                st.plotly_chart(chart, use_container_width=True)
+            
+            # Show data preview
+            with st.expander("View Data Table"):
+                st.dataframe(df_res, use_container_width=True)
+
+# ---------- Enhanced download functionality ----------
 if st.session_state.last_df is not None and not st.session_state.last_df.empty:
     st.markdown("---")
     st.subheader("📥 Export Results")
     
-    export_df = st.session_state.last_df.copy()
-    output = BytesIO()
+    col1, col2, col3 = st.columns([1, 1, 2])
     
-    try:
+    with col1:
+        MAX_EXPORT_ROWS = st.selectbox("Rows to export:", [100, 500, 1000, "All"], index=1)
+        if MAX_EXPORT_ROWS == "All":
+            export_df = st.session_state.last_df.copy()
+        else:
+            export_df = st.session_state.last_df.iloc[:int(MAX_EXPORT_ROWS)].copy()
+    
+    with col2:
+        # Show data summary
+        st.caption(f"📋 {len(export_df)} rows × {len(export_df.columns)} columns")
+    
+    with col3:
+        # Enhanced download options
+        output = BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             export_df.to_excel(writer, index=False, sheet_name='Executive_Report')
-            
-            # Add metadata sheet
-            meta = pd.DataFrame({
-                'Metric': ['Total Rows', 'Total Columns', 'Export Date', 'SQL Query'],
-                'Value': [
-                    len(export_df), 
-                    len(export_df.columns),
-                    datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    st.session_state.last_sql[:1000]  # Truncate long queries
-                ]
-            })
-            meta.to_excel(writer, index=False, sheet_name='Summary')
+            # Add a summary sheet
+            summary_data = {
+                'Metric': ['Total Rows', 'Total Columns', 'Export Date'],
+                'Value': [len(export_df), len(export_df.columns), datetime.now().strftime("%Y-%m-%d %H:%M")]
+            }
+            pd.DataFrame(summary_data).to_excel(writer, index=False, sheet_name='Summary')
         
-        output.seek(0)
-        ts = datetime.now().strftime("%Y%m%d_%H%M")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         
         st.download_button(
             "💾 Download Executive Report",
             data=output.getvalue(),
-            file_name=f"voylla_executive_report_{ts}.xlsx",
+            file_name=f"voylla_executive_report_{timestamp}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
-            key="download_exec"
+            key="executive_download"
         )
-        
-    except Exception as e:
-        st.error(f"Export failed: {e}")
 
-# Footer
+# ---------- Footer with executive tips ----------
 st.markdown("---")
 st.markdown("""
-<div style='text-align:center;color:#666;font-size:.9em;'>
-💡 <b>Executive Tips:</b> Ask about trends, comparisons, performance metrics, and growth opportunities •
-Use terms like "YoY", "QoQ", "market share", "trending", "best performing" •
-Say "show me channel-wise performance this quarter" to start.
+<div style='text-align: center; color: #666; font-size: 0.9em;'>
+💡 <b>Executive Tips:</b> Ask about trends, comparisons, performance metrics, and growth opportunities • 
+Use terms like "YoY", "QoQ", "market share", "trending", "best performing" • 
+Request visualizations with "show me a chart of..."
 </div>
 """, unsafe_allow_html=True)
