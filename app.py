@@ -46,7 +46,7 @@ os.environ["OPENAI_API_KEY"] = api_key
 @st.cache_resource
 def get_llm():
     return ChatOpenAI(
-        model="gpt-3.5-turbo",  # Changed from gpt-4.1-mini to stable model
+        model="gpt-4.1-mini",  # Changed from gpt-4.1-mini to stable model
         temperature=0,  # Set to 0 for consistent formatting
         request_timeout=120,
         max_retries=3,
