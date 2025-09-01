@@ -5,62 +5,47 @@ import streamlit as st
 from langchain_openai import ChatOpenAI
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
-import os, re, time
+import os, re, random
 import pandas as pd
 from io import BytesIO
 import plotly.express as px
 from datetime import datetime
 
-# =========================
-# CONFIG
-# =========================
+# ---------- Spinner messages ----------
+TEMPLATES_FILE = "voylla_about_templates_attractive.txt"
+if os.path.exists(TEMPLATES_FILE):
+    with open(TEMPLATES_FILE, "r", encoding="utf-8") as file:
+        lines = [line.strip().split('. ', 1)[1] for line in file if '. ' in line]
+else:
+    lines = [
+        "Crunching the numbers with a sparkle ✨",
+        "Polishing your insights… 💎",
+        "Crafting your jewelry analytics… 💍",
+    ]
+
+# ---------- Config ----------
 st.set_page_config(
     page_title="Voylla DesignGPT - Executive Dashboard",
     page_icon="💎",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="expanded"
 )
 
-# Minimal, stable model for deterministic SQL text output
-MODEL_NAME = "gpt-4o-mini"
-LLM_TEMPERATURE = 0.1
-
-# =========================
-# STYLES
-# =========================
-st.markdown("""
-<style>
-.stApp { background-color: #f8f9fa; color: #212529; }
-.main-header { font-size: 2.2rem; color: #4a4a4a; font-weight: 700; margin-bottom: .25rem; }
-.metric-card {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    padding: 1.0rem; border-radius: 12px; color: white; text-align: center; margin: .5rem 0;
-    box-shadow: 0 4px 6px rgba(0,0,0,.1);
-}
-.executive-summary {
-    background-color: white; border-radius: 12px; padding: 1.2rem; box-shadow: 0 4px 6px rgba(0,0,0,.05);
-    margin-bottom: 1.2rem; border-left: 4px solid #764ba2;
-}
-.assistant-message { background-color: #f8f9fa; border-radius: 12px; padding: 1rem; border-left: 4px solid #667eea; }
-</style>
-""", unsafe_allow_html=True)
-
-# =========================
-# KEYS & CONNECTIONS
-# =========================
+# ---------- LLM ----------
 load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
 if not api_key:
-    st.error("🔑 No OpenAI key found – please add it to your app Secrets or .env")
+    st.error("🔑 No OpenAI key found – please add it in your app's Secrets.")
     st.stop()
 os.environ["OPENAI_API_KEY"] = api_key
 
 @st.cache_resource
 def get_llm():
-    return ChatOpenAI(model=MODEL_NAME, temperature=LLM_TEMPERATURE, request_timeout=60, max_retries=3)
+    return ChatOpenAI(model="gpt-4o-mini", temperature=0.1, request_timeout=60, max_retries=3)
 
 llm = get_llm()
 
+# ---------- DB Connection ----------
 @st.cache_resource
 def get_engine_and_schema():
     try:
@@ -70,7 +55,7 @@ def get_engine_and_schema():
         db_user = st.secrets["DB_USER"]
         db_password = st.secrets["DB_PASSWORD"]
     except KeyError:
-        st.error("❌ Missing DB_* secrets. Please add DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD.")
+        st.error("❌ Missing DB_* secrets.")
         st.stop()
 
     engine = create_engine(
@@ -96,50 +81,21 @@ def get_engine_and_schema():
 
 engine, schema_doc = get_engine_and_schema()
 
-# =========================
-# HELPERS
-# =========================
+# ---------- Helpers ----------
 DANGEROUS = re.compile(r"\b(DROP|DELETE|UPDATE|INSERT|ALTER|TRUNCATE|CREATE|GRANT|REVOKE)\b", re.I)
 
 def make_sql_prompt(question: str, schema_text: str) -> str:
     return f"""
-You are Voylla DesignGPT Executive Edition, an expert SQL/analytics assistant for Voylla jewelry data analysis designed for executives.
-
-# DATABASE SCHEMA
-{schema_text}
-
-# KEY COLUMNS FOR EXECUTIVE ANALYSIS
-### Business Metrics
-- "Date" (timestamp) — Transaction date
-- "Channel" (text) — Sales platform (Cloudtail, FLIPKART, MYNTRA, NYKAA, etc.)
-- "Sale Order Item Status" (text) — Filter with: WHERE "Sale Order Item Status" != 'CANCELLED'
-- "Qty" (integer) — Units sold
-- "Amount" (numeric) — Revenue (Qty × price)
-- "MRP" (numeric) — Maximum Retail Price
-- "Cost Price" (numeric) — Unit cost
-
-### Design Intelligence
-- "Design Style" (text) — Aesthetic (Tribal, Contemporary, Traditional/Ethnic, Minimalist)
-- "Form" (text) — Shape (Triangle, Stud, Hoop, Jhumka, Ear Cuff)
-- "Metal Color" (text) — Finish (Antique Silver, Yellow Gold, Rose Gold, Silver, Antique Gold, Oxidized Black)
-- "Look" (text) — Occasion/vibe (Oxidized, Everyday, Festive, Party, Wedding)
-- "Central Stone" (実はtext) — Primary gemstone
-
-# MANDATORY RULES
-- Generate only valid PostgreSQL SELECT queries.
-- Only use table voylla."voylla_design_ai".
-- Always exclude cancelled orders: WHERE "Sale Order Item Status" != 'CANCELLED'.
-- For time-based questions (e.g., "this quarter", "last 6 months"), infer sensible date filters using "Date".
+You are an expert SQL analyst for Voylla jewelry data.
+Generate a valid PostgreSQL SELECT query for the question.
+RULES:
+- Use only voylla."voylla_design_ai".
+- Always include WHERE "Sale Order Item Status" != 'CANCELLED'.
+- For time-based questions, infer sensible date filters using "Date".
 - Use double-quotes for all identifiers.
-- Output ONLY the SQL query, no explanations or markdown.
-
-# EXECUTIVE METRICS
-- Revenue: SUM("Amount")
-- Units: SUM("Qty")
-- Average Order Value: SUM("Amount") / NULLIF(SUM("Qty"), 0)
-- Profit Margin: (SUM("Amount") - SUM("Cost Price" * "Qty")) / NULLIF(SUM("Amount"), 0) * 100
-- Growth Rate: Use LAG() for period-over-period comparisons
-
+- Output ONLY the SQL query.
+SCHEMA:
+{schema_text}
 QUESTION:
 {question}
 """
@@ -150,9 +106,8 @@ def generate_sql(question: str) -> str:
     if sql.startswith("```"):
         sql = re.sub(r"^```[a-zA-Z0-9]*", "", sql).strip()
         sql = sql[:-3] if sql.endswith("```") else sql
-        sql = sql.strip()
     if DANGEROUS.search(sql):
-        raise ValueError("Generated SQL contains a non read-only keyword.")
+        raise ValueError("Generated SQL contains dangerous keywords.")
     if "voylla_design_ai" not in sql:
         raise ValueError("SQL must reference voylla.\"voylla_design_ai\".")
     return sql
@@ -172,28 +127,20 @@ You are an executive analyst for Voylla jewelry. Using the user's question and C
 2) 2-4 actionable recommendations
 3) Highlight best/worst performers if relevant
 4) Suggest if a visualization (e.g., bar chart, line chart) would enhance understanding
-
-Use clear, professional language suitable for executives. Avoid markdown tables. If no visualization is needed, state why.
-
+Use clear, professional language suitable for executives.
 USER QUESTION:
 {user_q}
-
 RESULTS PREVIEW (CSV):
 {preview_csv}
 """
     return llm.invoke(prompt).content.strip()
 
 def should_display_chart(df: pd.DataFrame, summary: str) -> bool:
-    """Determine if a chart is appropriate based on data and summary."""
     if df.empty:
         return False
     num_cols = df.select_dtypes(include=["number"]).columns.tolist()
     cat_cols = df.select_dtypes(exclude=["number"]).columns.tolist()
-    # Check if summary suggests a visualization
-    if "visualization" in summary.lower() and (len(num_cols) >= 1 and len(cat_cols) >= 1):
-        return True
-    # Heuristic: chart if we have at least one numeric and one categorical column, and not too many rows
-    return len(num_cols) >= 1 and len(cat_cols) >= 1 and len(df) <= 100
+    return "visualization" in summary.lower() and len(num_cols) >= 1 and len(cat_cols) >= 1 and len(df) <= 100
 
 def auto_chart(df: pd.DataFrame):
     if df.empty:
@@ -202,108 +149,99 @@ def auto_chart(df: pd.DataFrame):
     cat_cols = df.select_dtypes(exclude=["number"]).columns.tolist()
     if not num_cols or not cat_cols:
         return None
-    y = num_cols[0]  # Pick first numeric column
-    x = cat_cols[0]  # Pick first categorical column
+    y = num_cols[0]
+    x = cat_cols[0]
     try:
         work = df.copy()
         if len(work) > 15:
             work = work.nlargest(15, y) if y in work.columns else work.head(15)
         fig = px.bar(work, x=x, y=y, title=f"{y} by {x}")
-        fig.update_layout(height=420, showlegend=False)
+        fig.update_layout(height=400, showlegend=False)
         return fig
     except Exception:
         return None
 
-# =========================
-# SIDEBAR
-# =========================
+# ---------- Sidebar ----------
 with st.sidebar:
     st.markdown("<div class='metric-card'>📊 Executive Dashboard</div>", unsafe_allow_html=True)
-
-    with engine.connect() as conn:
-        try:
+    try:
+        with engine.connect() as conn:
             count = conn.execute(text("""
                 SELECT COUNT(*) FROM voylla."voylla_design_ai" 
                 WHERE "Sale Order Item Status" != 'CANCELLED'
             """)).scalar()
             st.success(f"✅ Connected: {count:,} active records")
-        except Exception as e:
-            st.error(f"❌ Connection issue: {e}")
+    except Exception as e:
+        st.error(f"❌ Connection issue: {e}")
 
     st.markdown("---")
     st.header("💡 Executive Questions")
-    presets = [
+    questions = [
         "Show me top 10 products by revenue this quarter",
         "What are our best performing channels by growth rate?",
         "Compare this year's revenue to last year by month",
         "Which design styles have the highest average order value?",
-        "Show me channel-wise revenue and units this month"
+        "Which metal colors are trending this season?"
     ]
-    for q in presets:
+    for q in questions:
         if st.button(f"• {q}", key=f"preset_{hash(q)}"):
-            st.session_state["auto_q"] = q
+            st.session_state.auto_question = q
 
     st.markdown("---")
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🗑️ Clear Chat", use_container_width=True):
-            st.session_state.chat = []
-            st.session_state["last_df"] = None
+            st.session_state.chat_history = []
+            st.session_state.last_df = None
             st.rerun()
     with col2:
-        st.caption("Agent-free • stable • no verbose logs")
+        st.caption("Voylla DesignGPT v2.0")
 
-# =========================
-# SESSION
-# =========================
-if "chat" not in st.session_state: st.session_state.chat = []
-if "auto_q" not in st.session_state: st.session_state.auto_q = None
-if "last_df" not in st.session_state: st.session_state.last_df = None
-if "last_sql" not in st.session_state: st.session_state.last_sql = ""
+# ---------- Session State ----------
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+if "auto_question" not in st.session_state:
+    st.session_state.auto_question = None
+if "last_df" not in st.session_state:
+    st.session_state.last_df = None
+if "last_sql" not in st.session_state:
+    st.session_state.last_sql = ""
 
-# =========================
-# HEADER
-# =========================
+# ---------- UI ----------
 st.markdown("<div class='main-header'>Voylla DesignGPT Executive Dashboard</div>", unsafe_allow_html=True)
-st.caption("AI-Powered Design Intelligence and Sales Analytics — agent-free & reliable")
+st.caption("AI-Powered Design Intelligence and Sales Analytics")
 
-# Render history
-for m in st.session_state.chat:
-    with st.chat_message(m["role"]):
-        st.markdown(m["content"] if m["role"]=="assistant" else m["content"])
+for message in st.session_state.chat_history:
+    with st.chat_message(message["role"]):
+        st.markdown(f"<div class='assistant-message'>{message['content']}</div>" if message["role"] == "assistant" else message["content"], unsafe_allow_html=True)
 
-# Always-visible input
-inp = st.chat_input("Ask an executive question about sales or design trends…", key="chat_box")
-if st.session_state.auto_q:
-    inp = st.session_state.auto_q
-    st.session_state.auto_q = None
+user_input = st.chat_input("Ask an executive question about sales or design trends…")
+if st.session_state.auto_question:
+    user_input = st.session_state.auto_question
+    st.session_state.auto_question = None
 
-if inp:
-    st.session_state.chat.append({"role":"user","content":inp})
+if user_input:
+    st.session_state.chat_history.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
-        st.markdown(inp)
+        st.markdown(user_input)
 
-    with st.spinner("Polishing your insights… 💎"):
+    with st.spinner(random.choice(lines)):
         try:
-            sql = generate_sql(inp)
+            sql = generate_sql(user_input)
             df = run_sql_to_df(sql)
             st.session_state.last_df = df
             st.session_state.last_sql = sql
-            summary = summarize_for_executives(df, inp)
+            summary = summarize_for_executives(df, user_input)
         except Exception as e:
             summary = f"⚠️ Could not complete request: {e}"
             df = pd.DataFrame()
 
-    # Assistant message
     with st.chat_message("assistant"):
-        if summary:
-            st.markdown(f"<div class='assistant-message'>{summary}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='assistant-message'>{summary}</div>", unsafe_allow_html=True)
 
-    # Show SQL (collapsible)
     with st.expander("View generated SQL"):
         st.code(st.session_state.last_sql, language="sql")
 
-    # Data table & chart
     if not df.empty:
         st.subheader("Results")
         st.dataframe(df, use_container_width=True)
@@ -313,7 +251,7 @@ if inp:
                 st.subheader("📊 Data Visualization")
                 st.plotly_chart(fig, use_container_width=True)
 
-# Export
+# ---------- Export ----------
 if st.session_state.last_df is not None and not st.session_state.last_df.empty:
     st.markdown("---")
     st.subheader("📥 Export Results")
@@ -329,21 +267,20 @@ if st.session_state.last_df is not None and not st.session_state.last_df.empty:
         })
         meta.to_excel(writer, index=False, sheet_name='Summary')
 
-    ts = datetime.now().strftime("%Y%m%d_%H%M")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     st.download_button(
         "💾 Download Executive Report",
         data=output.getvalue(),
-        file_name=f"voylla_executive_report_{ts}.xlsx",
+        file_name=f"voylla_executive_report_{timestamp}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
-        key="download_exec"
+        key="executive_download"
     )
 
 st.markdown("---")
 st.markdown("""
-<div style='text-align:center;color:#666;font-size:.9em;'>
-💡 <b>Executive Tips:</b> Ask about trends, comparisons, performance metrics, and growth opportunities •
-Use terms like "YoY", "MoM", "QoQ", "market share", "trending", "best performing" •
-Say "show me channel-wise performance this quarter" to start.
+<div style='text-align: center; color: #666; font-size: 0.9em;'>
+💡 <b>Executive Tips:</b> Ask about trends, comparisons, performance metrics, and growth opportunities • 
+Use terms like "YoY", "QoQ", "market share", "trending", "best performing"
 </div>
 """, unsafe_allow_html=True)
