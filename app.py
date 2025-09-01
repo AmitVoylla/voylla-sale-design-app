@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 # coding: utf-8
-
 import streamlit as st
 from langchain_openai import ChatOpenAI
 from sqlalchemy import create_engine, text
@@ -22,7 +21,7 @@ st.set_page_config(
 )
 
 # Minimal, stable model for deterministic SQL text output
-MODEL_NAME = "gpt-4.1-mini"   # <- stable with LangChain and great at following format
+MODEL_NAME = "gpt-4o-mini"   # Fixed model name
 LLM_TEMPERATURE = 0.1
 
 # =========================
@@ -41,7 +40,10 @@ st.markdown("""
     background-color: white; border-radius: 12px; padding: 1.2rem; box-shadow: 0 4px 6px rgba(0,0,0,.05);
     margin-bottom: 1.2rem; border-left: 4px solid #764ba2;
 }
-.assistant-message { background-color: #f8f9fa; border-radius: 12px; padding: 1rem; border-left: 4px solid #667eea; }
+.assistant-message { 
+    background-color: #f8f9fa; border-radius: 12px; padding: 1rem; 
+    border-left: 4px solid #667eea; margin: 1rem 0;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -49,10 +51,19 @@ st.markdown("""
 # KEYS & CONNECTIONS
 # =========================
 load_dotenv()
+
+# Initialize session state for chat history
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
 api_key = os.getenv("OPENAI_API_KEY")
 if not api_key:
-    st.error("🔑 No OpenAI key found – please add it to your app Secrets or .env")
-    st.stop()
+    try:
+        api_key = st.secrets["OPENAI_API_KEY"]
+    except:
+        st.error("🔑 No OpenAI key found – please add it to your app Secrets or .env")
+        st.stop()
+
 os.environ["OPENAI_API_KEY"] = api_key
 
 @st.cache_resource
@@ -65,22 +76,39 @@ llm = get_llm()
 def get_engine_and_schema():
     """Create engine and return schema string for the single allowed table."""
     try:
-        db_host = st.secrets["DB_HOST"]
-        db_port = st.secrets["DB_PORT"]
-        db_name = st.secrets["DB_NAME"]
-        db_user = st.secrets["DB_USER"]
-        db_password = st.secrets["DB_PASSWORD"]
-    except KeyError:
-        st.error("❌ Missing DB_* secrets. Please add DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD.")
+        # Try secrets first, then environment variables
+        try:
+            db_host = st.secrets["DB_HOST"]
+            db_port = st.secrets["DB_PORT"]
+            db_name = st.secrets["DB_NAME"]
+            db_user = st.secrets["DB_USER"]
+            db_password = st.secrets["DB_PASSWORD"]
+        except:
+            db_host = os.getenv("DB_HOST")
+            db_port = os.getenv("DB_PORT")
+            db_name = os.getenv("DB_NAME")
+            db_user = os.getenv("DB_USER")
+            db_password = os.getenv("DB_PASSWORD")
+            
+        if not all([db_host, db_port, db_name, db_user, db_password]):
+            raise ValueError("Missing database configuration")
+            
+    except Exception as e:
+        st.error("❌ Missing DB configuration. Please add DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD.")
         st.stop()
 
     engine = create_engine(
         f"postgresql+psycopg2://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}",
         pool_pre_ping=True, pool_recycle=3600, pool_size=5, max_overflow=10
     )
-    # smoke test
-    with engine.connect() as conn:
-        conn.execute(text("SELECT 1"))
+    
+    # Smoke test
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as e:
+        st.error(f"❌ Database connection failed: {e}")
+        st.stop()
 
     # Build schema doc from information_schema for the allowed table
     schema_rows = []
@@ -90,10 +118,19 @@ def get_engine_and_schema():
         WHERE table_schema='voylla' AND table_name='voylla_design_ai'
         ORDER BY ordinal_position
     """
-    with engine.connect() as conn:
-        rows = conn.execute(text(q)).fetchall()
-        for c, t in rows:
-            schema_rows.append(f'- "{c}" ({t})')
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text(q)).fetchall()
+            for c, t in rows:
+                schema_rows.append(f'- "{c}" ({t})')
+    except Exception as e:
+        st.error(f"❌ Could not fetch schema: {e}")
+        st.stop()
+    
+    if not schema_rows:
+        st.error("❌ Table voylla.voylla_design_ai not found or empty")
+        st.stop()
+        
     schema_string = "Table: voylla.\"voylla_design_ai\" (read-only)\n" + "\n".join(schema_rows)
     return engine, schema_string
 
@@ -120,9 +157,92 @@ def get_conversation_context():
     
     return "\n".join(context_parts)
 
+def should_show_chart(question: str, df: pd.DataFrame) -> bool:
+    """Determine if a chart would be appropriate for the question and data."""
+    if df.empty or len(df) < 2:
+        return False
+    
+    # Keywords that suggest visualization would be helpful
+    chart_keywords = [
+        'trend', 'compare', 'comparison', 'growth', 'over time', 'by month', 'by year',
+        'top', 'ranking', 'performance', 'distribution', 'analysis', 'breakdown',
+        'versus', 'vs', 'chart', 'graph', 'visualize', 'show me'
+    ]
+    
+    # Keywords that suggest no chart needed
+    no_chart_keywords = [
+        'count', 'total', 'sum', 'average', 'mean', 'specific', 'exact',
+        'list all', 'show all', 'details', 'information about'
+    ]
+    
+    question_lower = question.lower()
+    
+    # If explicitly asking for no visualization
+    for keyword in no_chart_keywords:
+        if keyword in question_lower and not any(ck in question_lower for ck in chart_keywords):
+            return False
+    
+    # If asking for visualization or comparative analysis
+    for keyword in chart_keywords:
+        if keyword in question_lower:
+            return True
+    
+    # Check data characteristics
+    numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+    categorical_cols = df.select_dtypes(exclude=['number']).columns.tolist()
+    
+    # Need at least one numeric column for meaningful charts
+    if not numeric_cols:
+        return False
+    
+    # If we have good categorical data and the result isn't too large
+    if categorical_cols and len(df) <= 50:
+        return True
+    
+    return False
+
+def should_show_table(question: str, df: pd.DataFrame) -> bool:
+    """Determine if showing the full table would be appropriate."""
+    if df.empty:
+        return False
+    
+    # Always show table for small results
+    if len(df) <= 10:
+        return True
+    
+    # Keywords that suggest detailed tabular data is needed
+    table_keywords = [
+        'list', 'show all', 'details', 'breakdown', 'individual', 'each',
+        'specific', 'exact', 'complete', 'full'
+    ]
+    
+    # Keywords that suggest summary is enough
+    summary_keywords = [
+        'total', 'sum', 'count', 'average', 'mean', 'trend', 'growth',
+        'top 5', 'top 10', 'summary', 'overview'
+    ]
+    
+    question_lower = question.lower()
+    
+    # If asking for summary-level info, limit table size
+    for keyword in summary_keywords:
+        if keyword in question_lower:
+            return len(df) <= 20
+    
+    # If asking for detailed info, show more
+    for keyword in table_keywords:
+        if keyword in question_lower:
+            return len(df) <= 100
+    
+    # Default: show table if reasonable size
+    return len(df) <= 25
+
 def make_sql_prompt(question: str, schema_text: str) -> str:
+    conversation_context = get_conversation_context()
+    
     return f"""
 You are a senior data analyst. Return a single **valid PostgreSQL** SELECT query for the question.
+
 STRICT RULES:
 - Read-only SELECT statements only.
 - Only use table voylla."voylla_design_ai".
@@ -130,6 +250,9 @@ STRICT RULES:
 - If time period is vague (e.g., "this quarter", "last 6 months"), infer sensible filters using "Date".
 - Use double-quotes for all identifiers.
 - Do not add explanations, markdown, or fencing; output ONLY the SQL.
+- Limit results to reasonable sizes (use LIMIT when appropriate).
+
+{conversation_context}
 
 SCHEMA:
 {schema_text}
@@ -140,116 +263,109 @@ QUESTION:
 
 def generate_sql(question: str) -> str:
     prompt = make_sql_prompt(question, schema_doc)
-    sql = llm.invoke(prompt).content.strip()
-    # strip possible codefences if the model adds them
+    response = llm.invoke(prompt)
+    sql = response.content.strip()
+    
+    # Strip possible codefences if the model adds them
     if sql.startswith("```"):
         sql = re.sub(r"^```[a-zA-Z0-9]*", "", sql).strip()
         sql = sql[:-3] if sql.endswith("```") else sql
         sql = sql.strip()
-    # safety
+    
+    # Safety checks
     if DANGEROUS.search(sql):
         raise ValueError("Generated SQL contains a non read-only keyword.")
     if "voylla_design_ai" not in sql:
         raise ValueError("SQL must reference voylla.\"voylla_design_ai\".")
+    
     return sql
 
 def run_sql_to_df(sql: str) -> pd.DataFrame:
-    with engine.connect() as conn:
-        try:
+    try:
+        with engine.connect() as conn:
             return pd.read_sql_query(sql, conn)
-        except Exception as e:
-            raise RuntimeError(f"SQL execution error: {e}")
+    except Exception as e:
+        raise RuntimeError(f"SQL execution error: {e}")
 
 def summarize_for_executives(df: pd.DataFrame, user_q: str) -> str:
+    """Generate executive summary of the results."""
+    if df.empty:
+        return "No data found for the requested analysis."
+    
     # Keep token-light by downsampling preview
     preview_csv = df.head(50).to_csv(index=False)
+    conversation_context = get_conversation_context()
+    
     prompt = f"""
-You are Voylla DesignGPT Executive Edition, an expert SQL/analytics assistant for Voylla jewelry data analysis designed for executive use.
+You are Voylla DesignGPT Executive Edition, an expert analytics assistant for Voylla jewelry data analysis.
 
-# CONVERSATION CONTEXT
 {conversation_context}
 
 # EXECUTIVE REPORTING GUIDELINES
 - Focus on business insights, not just data
 - Highlight trends, opportunities, and risks
-- Compare performance metrics (YoY, MoM, QoQ)
+- Compare performance metrics when possible
 - Use clear, concise language appropriate for executives
-- Provide actionable recommendations when possible
+- Provide actionable recommendations when relevant
+- Format responses with proper markdown for readability
 
-# DATABASE SCHEMA: voylla."voylla_design_ai"
-
-## KEY COLUMNS FOR EXECUTIVE ANALYSIS
-### Business Metrics
-- "Date" (timestamp) — Transaction date
-- "Channel" (text) — Sales platform (Cloudtail, FLIPKART, MYNTRA, NYKAA, etc.)
-- "Sale Order Item Status" (text) — Filter with: WHERE "Sale Order Item Status" != 'CANCELLED'
-- "Qty" (integer) — Units sold
-- "Amount" (numeric) — Revenue (Qty × price)
-- "MRP" (numeric) — Maximum Retail Price
-- "Cost Price" (numeric) — Unit cost
-
-### Design Intelligence
-- "Design Style" (text) — Aesthetic (Tribal, Contemporary, Traditional/Ethnic, Minimalist)
-- "Form" (text) — Shape (Triangle, Stud, Hoop, Jhumka, Ear Cuff)
-- "Metal Color" (text) — Finish (Antique Silver, Yellow Gold, Rose Gold, Silver, Antique Gold, Oxidized Black)
-- "Look" (text) — Occasion/vibe (Oxidized, Everyday, Festive, Party, Wedding)
-- "Central Stone" (text) — Primary gemstone
-
-# MANDATORY FILTERS
-- Always exclude cancelled orders: WHERE "Sale Order Item Status" != 'CANCELLED'
-- For time-based questions, use appropriate date ranges
-- When comparing channels, ensure fair comparison by including only common time periods
-
-# EXECUTIVE METRICS
+# KEY BUSINESS METRICS
 - Revenue: SUM("Amount")
-- Units: SUM("Qty")
-- Average Order Value: SUM("Amount") / NULLIF(SUM("Qty"), 0)
-- Profit Margin: (SUM("Amount") - SUM("Cost Price" * "Qty")) / NULLIF(SUM("Amount"), 0) * 100
-- Growth Rate: Use LAG() function for period-over-period comparisons
+- Units: SUM("Qty") 
+- Average Order Value: Revenue/Units
+- Profit Margin: (Revenue - Cost)/Revenue * 100
 
-# RESPONSE FORMATTING FOR EXECUTIVES
-1. Start with a concise executive summary of key findings
-2. Present data in clean, well-formatted markdown tables
-3. Highlight the most important insights in bold
-4. Include visualizations when appropriate (charts will be auto-generated)
-5. End with actionable recommendations or suggested next analyses
+USER QUESTION: {user_q}
 
-# # CURRENT EXECUTIVE REQUEST
-# {user_input}
-
-Remember: You are speaking to company executives. Be insightful, professional, and focused on business impact.
-
-
-USER QUESTION:
-{user_q}
-
-RESULTS PREVIEW (CSV):
+DATA PREVIEW (CSV):
 {preview_csv}
-"""
-    return llm.invoke(prompt).content.strip()
 
-def auto_chart(df: pd.DataFrame):
-    # pick a sensible default: first object column as x, largest numeric as y
-    if df.empty:
+Provide a clear executive summary focusing on key insights and business implications.
+"""
+    
+    try:
+        response = llm.invoke(prompt)
+        return response.content.strip()
+    except Exception as e:
+        return f"Analysis completed. Found {len(df)} records. Please review the data table below for detailed results."
+
+def auto_chart(df: pd.DataFrame, question: str):
+    """Generate appropriate chart based on data and question context."""
+    if df.empty or not should_show_chart(question, df):
         return None
+    
     num_cols = df.select_dtypes(include=["number"]).columns.tolist()
     cat_cols = df.select_dtypes(exclude=["number"]).columns.tolist()
+    date_cols = [col for col in df.columns if 'date' in col.lower() or 'time' in col.lower()]
+    
     if not num_cols:
         return None
-    y = num_cols[0]
-    x = cat_cols[0] if cat_cols else None
+    
     try:
-        if x:
-            # top-15 for readability
-            work = df.copy()
-            if len(work) > 15:
-                work = work.nlargest(15, y) if y in work.columns else work.head(15)
-            fig = px.bar(work, x=x, y=y, title=f"{y} by {x}")
+        # Choose the most appropriate chart type
+        if date_cols and len(df) > 1:
+            # Time series chart
+            fig = px.line(df, x=date_cols[0], y=num_cols[0], 
+                         title=f"{num_cols[0]} Over Time")
+        elif cat_cols and len(df) <= 20:
+            # Bar chart for categorical data
+            work_df = df.copy()
+            if len(work_df) > 15:
+                work_df = work_df.nlargest(15, num_cols[0])
+            fig = px.bar(work_df, x=cat_cols[0], y=num_cols[0], 
+                        title=f"{num_cols[0]} by {cat_cols[0]}")
+            fig.update_xaxis(tickangle=45)
+        elif len(num_cols) >= 2 and len(df) <= 100:
+            # Scatter plot for correlation
+            fig = px.scatter(df, x=num_cols[0], y=num_cols[1], 
+                           title=f"{num_cols[1]} vs {num_cols[0]}")
         else:
-            fig = px.line(df, y=y, title=f"Trend of {y}")
-        fig.update_layout(height=420, showlegend=False)
+            return None
+        
+        fig.update_layout(height=400, showlegend=False)
         return fig
-    except Exception:
+        
+    except Exception as e:
         return None
 
 # =========================
@@ -257,133 +373,170 @@ def auto_chart(df: pd.DataFrame):
 # =========================
 with st.sidebar:
     st.markdown("<div class='metric-card'>📊 Executive Dashboard</div>", unsafe_allow_html=True)
-
-    with engine.connect() as conn:
-        try:
+    
+    # Connection status
+    try:
+        with engine.connect() as conn:
             count = conn.execute(text("""
                 SELECT COUNT(*) FROM voylla."voylla_design_ai" 
                 WHERE "Sale Order Item Status" != 'CANCELLED'
             """)).scalar()
             st.success(f"✅ Connected: {count:,} active records")
-        except Exception as e:
-            st.error(f"❌ Connection issue: {e}")
+    except Exception as e:
+        st.error(f"❌ Connection issue: {e}")
 
     st.markdown("---")
     st.header("💡 Executive Questions")
+    
     presets = [
         "Show me top 10 products by revenue this quarter",
-        "What are our best performing channels by growth rate?",
+        "What are our best performing channels by growth rate?", 
         "Compare this year's revenue to last year by month",
         "Which design styles have the highest average order value?",
         "Show me channel-wise revenue and units this month"
     ]
-    for q in presets:
-        if st.button(f"• {q}", key=f"preset_{hash(q)}"):
+    
+    for i, q in enumerate(presets):
+        if st.button(f"• {q}", key=f"preset_{i}"):
             st.session_state["auto_q"] = q
 
     st.markdown("---")
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🗑️ Clear Chat", use_container_width=True):
-            st.session_state.chat = []
-            st.session_state["last_df"] = None
-            st.session_state["last_sql"] = ""
+            for key in ['chat', 'chat_history', 'last_df', 'last_sql', 'auto_q']:
+                if key in st.session_state:
+                    del st.session_state[key]
             st.rerun()
+    
     with col2:
-        st.caption("Agent-free • stable • no verbose logs")
+        st.caption("Agent-free • stable")
 
 # =========================
-# SESSION
+# SESSION STATE
 # =========================
-if "chat" not in st.session_state: st.session_state.chat = []
-if "auto_q" not in st.session_state: st.session_state.auto_q = None
-if "last_df" not in st.session_state: st.session_state.last_df = None
-if "last_sql" not in st.session_state: st.session_state.last_sql = ""
+if "chat" not in st.session_state: 
+    st.session_state.chat = []
+if "auto_q" not in st.session_state: 
+    st.session_state.auto_q = None
+if "last_df" not in st.session_state: 
+    st.session_state.last_df = None
+if "last_sql" not in st.session_state: 
+    st.session_state.last_sql = ""
 
 # =========================
-# HEADER
+# MAIN INTERFACE
 # =========================
 st.markdown("<div class='main-header'>Voylla DesignGPT Executive Dashboard</div>", unsafe_allow_html=True)
-st.caption("AI-Powered Design Intelligence and Sales Analytics — agent-free & reliable")
+st.caption("AI-Powered Design Intelligence and Sales Analytics")
 
-# Render history
+# Render chat history
 for m in st.session_state.chat:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
 
-# Always-visible input (keeps mobile keyboard)
+# Handle input
 inp = st.chat_input("Ask an executive question about sales or design trends…", key="chat_box")
+
 if st.session_state.auto_q:
     inp = st.session_state.auto_q
     st.session_state.auto_q = None
 
 if inp:
-    st.session_state.chat.append({"role":"user","content":inp})
+    # Add to chat history
+    st.session_state.chat.append({"role": "user", "content": inp})
+    st.session_state.chat_history.append({"role": "user", "content": inp})
+    
     with st.chat_message("user"):
         st.markdown(inp)
-
-    with st.spinner("Polishing your insights… 💎"):
+    
+    with st.spinner("Analyzing your request... 💎"):
         try:
+            # Generate and execute SQL
             sql = generate_sql(inp)
             df = run_sql_to_df(sql)
             st.session_state.last_df = df
             st.session_state.last_sql = sql
+            
+            # Generate executive summary
             summary = summarize_for_executives(df, inp)
+            
         except Exception as e:
-            summary = f"⚠️ Could not complete request: {e}"
+            summary = f"⚠️ Could not complete request: {str(e)}"
             df = pd.DataFrame()
-
-    # Assistant message
+    
+    # Display assistant response
     with st.chat_message("assistant"):
         if summary:
             st.markdown(f"<div class='assistant-message'>{summary}</div>", unsafe_allow_html=True)
-
-    # NEW: persist assistant message so it survives reruns (e.g. after download)
+    
+    # Add assistant response to chat history
     if summary:
-        st.session_state.chat.append({"role": "assistant", "content": summary})  # NEW
-
+        st.session_state.chat.append({"role": "assistant", "content": summary})
+        st.session_state.chat_history.append({"role": "assistant", "content": summary})
+    
     # Show SQL (collapsible)
-    with st.expander("View generated SQL"):
-        st.code(st.session_state.last_sql, language="sql")
-
-    # Data table & chart
+    if st.session_state.last_sql:
+        with st.expander("🔍 View Generated SQL"):
+            st.code(st.session_state.last_sql, language="sql")
+    
+    # Show results conditionally
     if not df.empty:
-        st.subheader("Results")
-        st.dataframe(df, use_container_width=True)
-        fig = auto_chart(df)
+        # Show table only if appropriate
+        if should_show_table(inp, df):
+            st.subheader("📋 Data Results")
+            if len(df) > 100:
+                st.info(f"Showing first 100 rows of {len(df)} total results")
+                st.dataframe(df.head(100), use_container_width=True)
+            else:
+                st.dataframe(df, use_container_width=True)
+        
+        # Show chart only if appropriate  
+        fig = auto_chart(df, inp)
         if fig:
             st.subheader("📊 Data Visualization")
             st.plotly_chart(fig, use_container_width=True)
 
-# Export
+# Export functionality
 if st.session_state.last_df is not None and not st.session_state.last_df.empty:
     st.markdown("---")
     st.subheader("📥 Export Results")
+    
     export_df = st.session_state.last_df.copy()
     output = BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        export_df.to_excel(writer, index=False, sheet_name='Executive_Report')
-        meta = pd.DataFrame({
-            'Metric': ['Total Rows', 'Total Columns', 'Export Date', 'SQL'],
-            'Value': [len(export_df), len(export_df.columns),
-                      datetime.now().strftime("%Y-%m-%d %H:%M"),
-                      st.session_state.last_sql[:32000]]
-        })
-        meta.to_excel(writer, index=False, sheet_name='Summary')
+    
+    try:
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            export_df.to_excel(writer, index=False, sheet_name='Executive_Report')
+            
+            # Add metadata sheet
+            meta = pd.DataFrame({
+                'Metric': ['Total Rows', 'Total Columns', 'Export Date', 'SQL Query'],
+                'Value': [
+                    len(export_df), 
+                    len(export_df.columns),
+                    datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    st.session_state.last_sql[:1000]  # Truncate long queries
+                ]
+            })
+            meta.to_excel(writer, index=False, sheet_name='Summary')
+        
+        output.seek(0)
+        ts = datetime.now().strftime("%Y%m%d_%H%M")
+        
+        st.download_button(
+            "💾 Download Executive Report",
+            data=output.getvalue(),
+            file_name=f"voylla_executive_report_{ts}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key="download_exec"
+        )
+        
+    except Exception as e:
+        st.error(f"Export failed: {e}")
 
-    # NEW: reset buffer before passing to download_button so data is served correctly after rerun
-    output.seek(0)  # NEW
-
-    ts = datetime.now().strftime("%Y%m%d_%H%M")
-    st.download_button(
-        "💾 Download Executive Report",
-        data=output.getvalue(),
-        file_name=f"voylla_executive_report_{ts}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-        key="download_exec"
-    )
-
+# Footer
 st.markdown("---")
 st.markdown("""
 <div style='text-align:center;color:#666;font-size:.9em;'>
