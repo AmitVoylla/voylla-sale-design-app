@@ -590,56 +590,40 @@ Remember: You are speaking to company executives. Be insightful, professional, a
 #     st.subheader("📥 Export Results")
 
 if st.session_state.last_df is not None and not st.session_state.last_df.empty:
+    st.markdown("---")
+    st.subheader("📥 Export Results")
+
+    # User chooses how many rows to export
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        max_rows = st.selectbox("Rows to export:", [100, 500, 1000, "All"], index=1)
+    with col2:
+        st.caption(f"📋 {len(st.session_state.last_df)} rows × {len(st.session_state.last_df.columns)} columns")
+
+    if max_rows == "All":
+        export_df = st.session_state.last_df.copy()
+    else:
+        export_df = st.session_state.last_df.iloc[:int(max_rows)].copy()
+
+    # Build Excel with Summary sheet
     output = BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        st.session_state.last_df.to_excel(writer, index=False, sheet_name='Executive_Report')
-        # Additional summary sheet code...
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        export_df.to_excel(writer, index=False, sheet_name="Executive_Report")
+        summary_data = {
+            "Metric": ["Total Rows", "Total Columns", "Export Date"],
+            "Value": [len(export_df), len(export_df.columns), datetime.now().strftime("%Y-%m-%d %H:%M")]
+        }
+        pd.DataFrame(summary_data).to_excel(writer, index=False, sheet_name="Summary")
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     st.download_button(
         "💾 Download Executive Report",
         data=output.getvalue(),
         file_name=f"voylla_executive_report_{timestamp}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
+        use_container_width=True,
+        key="executive_download"
     )
-
-    
-    col1, col2, col3 = st.columns([1, 1, 2])
-    
-    with col1:
-        MAX_EXPORT_ROWS = st.selectbox("Rows to export:", [100, 500, 1000, "All"], index=1)
-        if MAX_EXPORT_ROWS == "All":
-            export_df = st.session_state.last_df.copy()
-        else:
-            export_df = st.session_state.last_df.iloc[:int(MAX_EXPORT_ROWS)].copy()
-    
-    with col2:
-        # Show data summary
-        st.caption(f"📋 {len(export_df)} rows × {len(export_df.columns)} columns")
-    
-    with col3:
-        # Enhanced download options
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            export_df.to_excel(writer, index=False, sheet_name='Executive_Report')
-            # Add a summary sheet
-            summary_data = {
-                'Metric': ['Total Rows', 'Total Columns', 'Export Date'],
-                'Value': [len(export_df), len(export_df.columns), datetime.now().strftime("%Y-%m-%d %H:%M")]
-            }
-            pd.DataFrame(summary_data).to_excel(writer, index=False, sheet_name='Summary')
-        
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-        
-        st.download_button(
-            "💾 Download Executive Report",
-            data=output.getvalue(),
-            file_name=f"voylla_executive_report_{timestamp}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-            key="executive_download"
-        )
-
 # ---------- Footer with executive tips ----------
 st.markdown("---")
 st.markdown("""
