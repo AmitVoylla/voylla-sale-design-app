@@ -315,7 +315,7 @@ def display_analysis(analysis: dict):
         for i, q in enumerate(analysis["followup_questions"]):
             if st.button(q, key=f"followup_{i}"):
                 st.session_state.auto_q = q
-                st.st.rerun()
+                st.rerun()
 
 # -------------------------
 # SIDEBAR
@@ -345,7 +345,7 @@ with st.sidebar:
     for q in presets:
         if st.button(q, key=f"preset_{hash(q)}"):
             st.session_state.auto_q = q
-            st.st.rerun()
+            st.rerun()
     st.markdown("---")
     c1, c2 = st.columns(2)
     with c1:
@@ -355,7 +355,7 @@ with st.sidebar:
             st.session_state.last_sql = ""
             st.session_state.last_analysis = None
             st.session_state.auto_q = None
-            st.st.rerun()
+            st.rerun()
     with c2:
         st.caption("Advanced AI • Context-aware • Executive Insights")
 
