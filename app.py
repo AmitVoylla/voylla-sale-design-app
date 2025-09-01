@@ -104,6 +104,22 @@ engine, schema_doc = get_engine_and_schema()
 # =========================
 DANGEROUS = re.compile(r"\b(DROP|DELETE|UPDATE|INSERT|ALTER|TRUNCATE|CREATE|GRANT|REVOKE)\b", re.I)
 
+def get_conversation_context():
+    """Build enhanced conversation context with better formatting."""
+    if not st.session_state.chat_history:
+        return ""
+    
+    # Get last 6 exchanges for better context
+    recent_history = st.session_state.chat_history[-6:]
+    
+    context_parts = ["### Conversation History:"]
+    for msg in recent_history:
+        role = "Human" if msg["role"] == "user" else "Assistant"
+        content = msg["content"][:500]  # Limit length
+        context_parts.append(f"{role}: {content}")
+    
+    return "\n".join(context_parts)
+
 def make_sql_prompt(question: str, schema_text: str) -> str:
     return f"""
 You are a senior data analyst. Return a single **valid PostgreSQL** SELECT query for the question.
