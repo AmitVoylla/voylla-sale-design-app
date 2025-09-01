@@ -324,30 +324,32 @@ for key in ["chat_history", "last_df", "last_query_result", "auto_question", "ex
         else:
             st.session_state[key] = None
 
-# ---------- FIXED Memory and Agent with proper error handling ----------
+# ---------- SIMPLIFIED Agent Creation (Fallback approach) ----------
 if "memory" not in st.session_state:
     st.session_state.memory = ConversationBufferWindowMemory(
         memory_key="chat_history",
         return_messages=True,
-        k=5  # Reduced to avoid token limits
+        k=5
     )
 
 if "agent_executor" not in st.session_state:
-    toolkit = SQLDatabaseToolkit(db=db, llm=llm)
-    st.session_state.agent_executor = create_sql_agent(
-        llm=llm,
-        toolkit=toolkit,
-        agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,  # Explicitly set stable agent type
-        verbose=False,  # Disable verbose to avoid parsing issues
-        handle_parsing_errors=True,
-        memory=st.session_state.memory,
-        max_iterations=15,  # Reduced iterations
-        early_stopping_method="generate",
-        agent_executor_kwargs={
-            "handle_parsing_errors": True,
-            "max_execution_time": 60,  # Add timeout
-        }
-    )
+    try:
+        toolkit = SQLDatabaseToolkit(db=db, llm=llm)
+        st.session_state.agent_executor = create_sql_agent(
+            llm=llm,
+            toolkit=toolkit,
+            verbose=False,
+            handle_parsing_errors=True,
+            max_iterations=10
+        )
+    except Exception as e:
+        st.error(f"Agent creation error: {e}")
+        # Create a minimal working agent as fallback
+        toolkit = SQLDatabaseToolkit(db=db, llm=llm)
+        st.session_state.agent_executor = create_sql_agent(
+            llm=llm,
+            toolkit=toolkit
+        )
 
 # ---------- Enhanced Sidebar ----------
 with st.sidebar:
