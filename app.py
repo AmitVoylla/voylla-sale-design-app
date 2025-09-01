@@ -22,7 +22,7 @@ st.set_page_config(
 )
 
 # Minimal, stable model for deterministic SQL text output
-MODEL_NAME = "gpt-4o-mini"   # <- stable with LangChain and great at following format
+MODEL_NAME = "gpt-4.1-mini"   # <- stable with LangChain and great at following format
 LLM_TEMPERATURE = 0.1
 
 # =========================
