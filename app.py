@@ -54,11 +54,18 @@ MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4")
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or st.secrets.get("OPENAI_API_KEY") if "OPENAI_API_KEY" in st.secrets else None
 
-if not OPENAI_API_KEY:
-    st.error("🔑 No OpenAI key found – please add it to your app Secrets or .env as OPENAI_API_KEY")
-    st.stop()
+# if not OPENAI_API_KEY:
+#     st.error("🔑 No OpenAI key found – please add it to your app Secrets or .env as OPENAI_API_KEY")
+#     st.stop()
 
-openai.api_key = OPENAI_API_KEY
+# openai.api_key = OPENAI_API_KEY
+
+load_dotenv()
+api_key = os.getenv("OPENAI_API_KEY")
+if not api_key:
+    st.error("🔑 No OpenAI key found – please add it to your app Secrets or .env")
+    st.stop()
+os.environ["OPENAI_API_KEY"] = api_key
 
 # -------------------------
 # UTILITIES
