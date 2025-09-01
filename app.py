@@ -19,8 +19,7 @@ NOTE: This file is intended to replace your previous app. Ensure you have `opena
 """
 # At the top
 import openai
-from openai import OpenAI
-from openai.error import RateLimitError, OpenAIError
+from openai import OpenAI, RateLimitError, APIError
 import streamlit as st
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
