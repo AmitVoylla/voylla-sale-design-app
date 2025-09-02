@@ -183,6 +183,31 @@ CRITICAL REQUIREMENTS:
 6. For aggregations, use proper GROUP BY clauses
 7. For rankings/top items, use ORDER BY with LIMIT
 
+SAFETY / GUARANTEES
+- **Never** run mutating queries. Disallow: DROP, DELETE, UPDATE, INSERT, ALTER, TRUNCATE, CREATE, GRANT, REVOKE.
+- Read-only analytical SELECTs only.
+- Return complete tables (no truncation) unless the user explicitly asks for a LIMIT.
+- Use **PostgreSQL** syntax and always **double-quote** column names.
+
+Design Intelligence Attributes
+- **"Design Style"** (text) — Aesthetic (Tribal, Contemporary, Traditional/Ethnic, Minimalist)
+- **"Form"** (text) — Shape (Triangle, Stud, Hoop, Jhumka, Ear Cuff)
+- **"Metal Color"** (text) — Finish (Antique Silver, Yellow Gold, Rose Gold, Silver, Antique Gold, Oxidized Black)
+- **"Look"** (text) — Occasion/vibe (Oxidized, Everyday, Festive, Party, Wedding)
+- **"Craft Style"** (text) — Technique (Handcrafted, etc.)
+- **"Central Stone"** (text) — Primary gemstone
+- **"Surrounding Layout"** (text) — Stone arrangement
+- **"Stone Setting"** (text) — Mounting style
+- **"Style Motif"** (text) — Design theme (Geometric, Floral, Abstract)
+
+QUERY PATTERNS
+- For **trending designs**: GROUP BY date bucket (e.g., month) and Design Style
+- For **success combinations**: GROUP BY 3–5 traits (avoid overly wide groups); order by SUM("Qty") DESC then SUM("Amount") DESC
+- For **channel breakdown**: include "Channel" in SELECT/GROUP BY
+- For **top SKUs**: group or filter by "Product Code"
+- Always **quote** column names and fully qualify the table as voylla."voylla_design_ai"
+
+
 COMMON PATTERNS:
 - Revenue analysis: SUM("Amount")
 - Unit sales: SUM("Qty") 
