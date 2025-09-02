@@ -559,7 +559,7 @@ with st.sidebar:
     # Controls
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("🗑️ Clear All", use_container_width=True):
+        if st.button("🗑️ Clear All", width='stretch'):
             st.session_state.chat_history = []
             st.session_state.analysis_history = []
             st.session_state.conversation_memory.clear()
@@ -590,11 +590,11 @@ if show_history and st.session_state.analysis_history:
                 if item['visualizations']:
                     st.markdown("#### 📈 Charts")
                     for viz in item['visualizations']:
-                        st.plotly_chart(viz, use_container_width=True)
+                        st.plotly_chart(viz, width='stretch')
                 
                 if not item['data'].empty:
                     st.markdown("#### 📋 Data")
-                    st.dataframe(item['data'].head(), use_container_width=True)
+                    st.dataframe(item['data'].head(), width='stretch')
                     
                     # Quick export
                     csv = item['data'].to_csv(index=False)
@@ -603,7 +603,7 @@ if show_history and st.session_state.analysis_history:
                         data=csv,
                         file_name=f"analysis_{i}.csv",
                         mime="text/csv",
-                        use_container_width=True
+                        width='stretch'
                     )
 
 # Chat input
@@ -682,21 +682,21 @@ if inp:
         
         # Display in grid
         if len(visualizations) == 1:
-            st.plotly_chart(visualizations[0], use_container_width=True)
+            st.plotly_chart(visualizations[0], width='stretch')
         elif len(visualizations) == 2:
             col1, col2 = st.columns(2)
-            col1.plotly_chart(visualizations[0], use_container_width=True)
-            col2.plotly_chart(visualizations[1], use_container_width=True)
+            col1.plotly_chart(visualizations[0], width='stretch')
+            col2.plotly_chart(visualizations[1], width='stretch')
         else:
             for i in range(0, len(visualizations), 2):
                 cols = st.columns(2)
                 for j, viz in enumerate(visualizations[i:i+2]):
-                    cols[j].plotly_chart(viz, use_container_width=True)
+                    cols[j].plotly_chart(viz, width='stretch')
     
     # Data table
     if not df.empty:
         st.markdown("### 📋 Data Table")
-        st.dataframe(df, use_container_width=True, height=400)
+        st.dataframe(df, width='stretch', height=400)
         
         # Export options
         st.markdown("### 💾 Export Options")
@@ -709,7 +709,7 @@ if inp:
                 data=csv,
                 file_name=f"voylla_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 mime="text/csv",
-                use_container_width=True
+                width='stretch'
             )
         
         with col2:
@@ -733,7 +733,7 @@ if inp:
                 data=output.getvalue(),
                 file_name=f"voylla_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
+                width='stretch'
             )
         
         with col3:
