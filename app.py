@@ -28,7 +28,7 @@ st.set_page_config(
 )
 
 # Model configuration
-MODEL_NAME = "gpt-4"
+MODEL_NAME = "gpt-4.1-mini"
 LLM_TEMPERATURE = 0.1
 
 # =========================
