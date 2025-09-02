@@ -215,6 +215,8 @@ COMMON PATTERNS:
 - Profit margin: (SUM("Amount") - SUM("Cost Price" * "Qty"))/NULLIF(SUM("Amount"),0) * 100
 - Time periods: DATE_TRUNC('month', "Date") for monthly data
 - Recent data: "Date" >= CURRENT_DATE - INTERVAL '30 days'
+- Inventory : SUM("Inventory")
+- Product Code is also called "SKU"
 
 
 OUTPUT RULES
