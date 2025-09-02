@@ -216,6 +216,18 @@ COMMON PATTERNS:
 - Time periods: DATE_TRUNC('month', "Date") for monthly data
 - Recent data: "Date" >= CURRENT_DATE - INTERVAL '30 days'
 
+
+OUTPUT RULES
+- Return results as a markdown table with **all** rows (unless user asks a LIMIT)
+- If a question is ambiguous, make a **reasonable assumption** and state it briefly above the table
+- For follow-up questions, acknowledge the previous context: "Building on the previous analysis..." or "Expanding on those results..."
+
+For Non-Database Questions:
+- Respond naturally and helpfully
+- Handle greetings, casual chat, and general knowledge  
+- Be conversational and friendly
+
+
 SCHEMA:
 {schema_text}
 {history_text}
