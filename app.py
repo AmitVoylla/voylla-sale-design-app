@@ -217,6 +217,7 @@ COMMON PATTERNS:
 - Recent data: "Date" >= CURRENT_DATE - INTERVAL '30 days'
 - Inventory : SUM("Inventory")
 - Product Code is also called "SKU"
+- Type column consists two types 'Online' And 'Offline'
 
 
 OUTPUT RULES
