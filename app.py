@@ -17,6 +17,8 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import json
 
+
+
 # =========================
 # CONFIG
 # =========================
@@ -30,6 +32,34 @@ st.set_page_config(
 # Model configuration
 MODEL_NAME = "gpt-4.1-mini"
 LLM_TEMPERATURE = 0.1
+
+
+def safe_json_loads(response: str):
+    """Try to clean and load JSON from model output safely"""
+    match = re.search(r'\{.*\}', response, re.DOTALL)
+    if not match:
+        return {}
+    
+    json_str = match.group(0)
+    json_str = re.sub(r'(\s*)([A-Za-z0-9_]+)(\s*):', r'\1"\2"\3:', json_str)  # quote keys
+    json_str = json_str.replace("'", '"')  # single → double quotes
+    
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError as e:
+        print("Final JSON parse failed:", e)
+        return {}
+
+def safe_analysis_dict(analysis: dict):
+    """Ensure all expected keys exist with defaults"""
+    return {
+        "executive_summary": analysis.get("executive_summary", "No summary generated."),
+        "key_metrics": analysis.get("key_metrics", {}),
+        "insights": analysis.get("insights", []),
+        "recommendations": analysis.get("recommendations", []),
+        "followup_questions": analysis.get("followup_questions", []),
+    }
+
 
 # =========================
 # STYLES
@@ -348,54 +378,27 @@ Provide your analysis in the following JSON format:
 """
     
     try:
-        response = llm.invoke(analysis_prompt).content.strip()
-        # Clean JSON response
-        if response.startswith("```json"):
-            response = response.replace("```json", "").replace("```", "").strip()
-
-        import re, json
-        
-        def safe_json_loads(response: str):
-            # Extract JSON block only
-            match = re.search(r'\{.*\}', response, re.DOTALL)
-            if not match:
-                return {}
-            
-            json_str = match.group(0)
-        
-            # Fix common issues:
-            # 1. Replace unquoted keys with quoted keys
-            json_str = re.sub(r'(\s*)([A-Za-z0-9_]+)(\s*):', r'\1"\2"\3:', json_str)
-            # 2. Replace single quotes with double quotes
-            json_str = json_str.replace("'", '"')
-        
-            try:
-                return json.loads(json_str)
-            except json.JSONDecodeError as e:
-                print("Final JSON parse failed:", e)
-                return {}
-
-
-        analysis = safe_json_loads(response)
-
-
-        
-        # analysis = json.loads(response)
-        
-        # Calculate actual metrics from data
-        actual_metrics = {}
-        if 'Amount' in df.columns:
-            actual_metrics['Total Revenue'] = f"₹{df['Amount'].sum():,.2f}"
-        if 'Qty' in df.columns:
-            actual_metrics['Total Units'] = f"{df['Qty'].sum():,}"
-        if 'Amount' in df.columns and 'Qty' in df.columns and df['Qty'].sum() > 0:
-            actual_metrics['Avg Order Value'] = f"₹{df['Amount'].sum() / df['Qty'].sum():.2f}"
-        
-        # Merge with calculated metrics
-        analysis['key_metrics'].update(actual_metrics)
-        
-        return analysis
-        
+    response = llm.invoke(analysis_prompt).content.strip()
+    if response.startswith("```json"):
+        response = response.replace("```json", "").replace("```", "").strip()
+    
+    # Parse and normalize
+    analysis = safe_json_loads(response)
+    analysis = safe_analysis_dict(analysis)
+    
+    # Calculate actual metrics from data
+    actual_metrics = {}
+    if 'Amount' in df.columns:
+        actual_metrics['Total Revenue'] = f"₹{df['Amount'].sum():,.2f}"
+    if 'Qty' in df.columns:
+        actual_metrics['Total Units'] = f"{df['Qty'].sum():,}"
+    if 'Amount' in df.columns and 'Qty' in df.columns and df['Qty'].sum() > 0:
+        actual_metrics['Avg Order Value'] = f"₹{df['Amount'].sum() / df['Qty'].sum():.2f}"
+    
+    analysis["key_metrics"].update(actual_metrics)
+    
+    return analysis
+       
     except Exception as e:
         st.warning(f"Analysis parsing error: {e}")
         # Fallback analysis
