@@ -354,18 +354,27 @@ Provide your analysis in the following JSON format:
             response = response.replace("```json", "").replace("```", "").strip()
 
         import re, json
-
+        
         def safe_json_loads(response: str):
             # Extract JSON block only
             match = re.search(r'\{.*\}', response, re.DOTALL)
-            if match:
-                json_str = match.group(0)
-                try:
-                    return json.loads(json_str)
-                except json.JSONDecodeError as e:
-                    st.warning(f"JSON decode fallback: {e}")
-                    return {}
-            return {}
+            if not match:
+                return {}
+            
+            json_str = match.group(0)
+        
+            # Fix common issues:
+            # 1. Replace unquoted keys with quoted keys
+            json_str = re.sub(r'(\s*)([A-Za-z0-9_]+)(\s*):', r'\1"\2"\3:', json_str)
+            # 2. Replace single quotes with double quotes
+            json_str = json_str.replace("'", '"')
+        
+            try:
+                return json.loads(json_str)
+            except json.JSONDecodeError as e:
+                print("Final JSON parse failed:", e)
+                return {}
+
 
         analysis = safe_json_loads(response)
 
