@@ -352,8 +352,26 @@ Provide your analysis in the following JSON format:
         # Clean JSON response
         if response.startswith("```json"):
             response = response.replace("```json", "").replace("```", "").strip()
+
+        import re, json
+
+        def safe_json_loads(response: str):
+            # Extract JSON block only
+            match = re.search(r'\{.*\}', response, re.DOTALL)
+            if match:
+                json_str = match.group(0)
+                try:
+                    return json.loads(json_str)
+                except json.JSONDecodeError as e:
+                    st.warning(f"JSON decode fallback: {e}")
+                    return {}
+            return {}
+
+        analysis = safe_json_loads(response)
+
+
         
-        analysis = json.loads(response)
+        # analysis = json.loads(response)
         
         # Calculate actual metrics from data
         actual_metrics = {}
