@@ -331,7 +331,17 @@ def analyze_data_improved(df: pd.DataFrame, user_q: str, history: list = None) -
     
     # Create more focused analysis prompt
     analysis_prompt = f"""
-You are a senior business analyst at Voylla jewelry company. Analyze the data and provide actionable insights.
+You are a senior business analyst. 
+Analyze the following dataset and user query. 
+
+ALWAYS return a valid JSON object with these exact keys:
+- executive_summary (string, 2–3 sentences)
+- key_metrics (object of name:value pairs)
+- insights (list of strings)
+- recommendations (list of strings)
+- followup_questions (list of strings)
+
+Do not include any text outside the JSON. 
 
 USER QUESTION: {user_q}
 
