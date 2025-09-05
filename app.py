@@ -17,8 +17,6 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import json
 
-
-
 # =========================
 # CONFIG
 # =========================
@@ -32,34 +30,6 @@ st.set_page_config(
 # Model configuration
 MODEL_NAME = "gpt-4.1-mini"
 LLM_TEMPERATURE = 0.1
-
-
-def safe_json_loads(response: str):
-    """Try to clean and load JSON from model output safely"""
-    match = re.search(r'\{.*\}', response, re.DOTALL)
-    if not match:
-        return {}
-    
-    json_str = match.group(0)
-    json_str = re.sub(r'(\s*)([A-Za-z0-9_]+)(\s*):', r'\1"\2"\3:', json_str)  # quote keys
-    json_str = json_str.replace("'", '"')  # single → double quotes
-    
-    try:
-        return json.loads(json_str)
-    except json.JSONDecodeError as e:
-        print("Final JSON parse failed:", e)
-        return {}
-
-def safe_analysis_dict(analysis: dict):
-    """Ensure all expected keys exist with defaults"""
-    return {
-        "executive_summary": analysis.get("executive_summary", "No summary generated."),
-        "key_metrics": analysis.get("key_metrics", {}),
-        "insights": analysis.get("insights", []),
-        "recommendations": analysis.get("recommendations", []),
-        "followup_questions": analysis.get("followup_questions", []),
-    }
-
 
 # =========================
 # STYLES
@@ -331,17 +301,7 @@ def analyze_data_improved(df: pd.DataFrame, user_q: str, history: list = None) -
     
     # Create more focused analysis prompt
     analysis_prompt = f"""
-You are a senior business analyst. 
-Analyze the following dataset and user query. 
-
-ALWAYS return a valid JSON object with these exact keys:
-- executive_summary (string, 2–3 sentences)
-- key_metrics (object of name:value pairs)
-- insights (list of strings)
-- recommendations (list of strings)
-- followup_questions (list of strings)
-
-Do not include any text outside the JSON. 
+You are a senior business analyst at Voylla jewelry company. Analyze the data and provide actionable insights.
 
 USER QUESTION: {user_q}
 
@@ -389,12 +349,11 @@ Provide your analysis in the following JSON format:
     
     try:
         response = llm.invoke(analysis_prompt).content.strip()
+        # Clean JSON response
         if response.startswith("```json"):
             response = response.replace("```json", "").replace("```", "").strip()
         
-        # Parse and normalize
-        analysis = safe_json_loads(response)
-        analysis = safe_analysis_dict(analysis)
+        analysis = json.loads(response)
         
         # Calculate actual metrics from data
         actual_metrics = {}
@@ -405,10 +364,11 @@ Provide your analysis in the following JSON format:
         if 'Amount' in df.columns and 'Qty' in df.columns and df['Qty'].sum() > 0:
             actual_metrics['Avg Order Value'] = f"₹{df['Amount'].sum() / df['Qty'].sum():.2f}"
         
-        analysis["key_metrics"].update(actual_metrics)
+        # Merge with calculated metrics
+        analysis['key_metrics'].update(actual_metrics)
         
         return analysis
-       
+        
     except Exception as e:
         st.warning(f"Analysis parsing error: {e}")
         # Fallback analysis
