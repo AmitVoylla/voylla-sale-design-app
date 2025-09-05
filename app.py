@@ -378,26 +378,26 @@ Provide your analysis in the following JSON format:
 """
     
     try:
-    response = llm.invoke(analysis_prompt).content.strip()
-    if response.startswith("```json"):
-        response = response.replace("```json", "").replace("```", "").strip()
-    
-    # Parse and normalize
-    analysis = safe_json_loads(response)
-    analysis = safe_analysis_dict(analysis)
-    
-    # Calculate actual metrics from data
-    actual_metrics = {}
-    if 'Amount' in df.columns:
-        actual_metrics['Total Revenue'] = f"₹{df['Amount'].sum():,.2f}"
-    if 'Qty' in df.columns:
-        actual_metrics['Total Units'] = f"{df['Qty'].sum():,}"
-    if 'Amount' in df.columns and 'Qty' in df.columns and df['Qty'].sum() > 0:
-        actual_metrics['Avg Order Value'] = f"₹{df['Amount'].sum() / df['Qty'].sum():.2f}"
-    
-    analysis["key_metrics"].update(actual_metrics)
-    
-    return analysis
+        response = llm.invoke(analysis_prompt).content.strip()
+        if response.startswith("```json"):
+            response = response.replace("```json", "").replace("```", "").strip()
+        
+        # Parse and normalize
+        analysis = safe_json_loads(response)
+        analysis = safe_analysis_dict(analysis)
+        
+        # Calculate actual metrics from data
+        actual_metrics = {}
+        if 'Amount' in df.columns:
+            actual_metrics['Total Revenue'] = f"₹{df['Amount'].sum():,.2f}"
+        if 'Qty' in df.columns:
+            actual_metrics['Total Units'] = f"{df['Qty'].sum():,}"
+        if 'Amount' in df.columns and 'Qty' in df.columns and df['Qty'].sum() > 0:
+            actual_metrics['Avg Order Value'] = f"₹{df['Amount'].sum() / df['Qty'].sum():.2f}"
+        
+        analysis["key_metrics"].update(actual_metrics)
+        
+        return analysis
        
     except Exception as e:
         st.warning(f"Analysis parsing error: {e}")
