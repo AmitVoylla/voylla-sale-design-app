@@ -3,7 +3,16 @@
 import streamlit as st
 from langchain_openai import ChatOpenAI
 # from langchain.memory import ConversationBufferMemory
-from langchain_core.memory import ConversationBufferMemory
+# from langchain_core.memory import ConversationBufferMemory
+
+try:
+    from langchain_core.memory import ConversationBufferMemory
+except ImportError:
+    try:
+        from langchain.memory import ConversationBufferMemory
+    except ImportError:
+        from langchain_community.chat_message_histories import ChatMessageHistory as ConversationBufferMemory
+
 from langchain.chains import ConversationChain
 from langchain.prompts import PromptTemplate
 from sqlalchemy import create_engine, text
