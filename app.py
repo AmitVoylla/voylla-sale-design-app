@@ -1,5 +1,8 @@
 #!/usr/bin/env python
 # coding: utf-8
+pip install -U langchain-core langchain-community
+
+
 import streamlit as st
 from langchain_openai import ChatOpenAI
 # from langchain.memory import ConversationBufferMemory
@@ -12,8 +15,9 @@ except ImportError:
         from langchain.memory import ConversationBufferMemory
     except ImportError:
         from langchain_community.chat_message_histories import ChatMessageHistory as ConversationBufferMemory
+from langchain.chains.conversation.base import ConversationChain
 
-from langchain.chains import ConversationChain
+# from langchain.chains import ConversationChain
 from langchain.prompts import PromptTemplate
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
