@@ -11,3 +11,4 @@ langchain-openai
 python-dotenv
 openpyxl
 plotly
+langchain-core
