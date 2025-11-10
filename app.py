@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 # coding: utf-8
-pip install -U langchain-core langchain-community
+# pip install -U langchain-core langchain-community
+import os
+os.system("pip install -U langchain-core langchain-community")
 
 
 import streamlit as st
