@@ -2,8 +2,12 @@
 # coding: utf-8
 import streamlit as st
 from langchain_openai import ChatOpenAI
-from langchain.memory import ConversationBufferMemory
+# from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationChain
+
+from langchain_community.chat_message_histories import ChatMessageHistory
+from langchain.memory import ConversationBufferMemory
+
 from langchain.prompts import PromptTemplate
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
